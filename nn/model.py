@@ -95,6 +95,7 @@ def train_model(
     batch_size=512,
     lr=1e-3,
     patience=5,
+    min_delta=1e-5,
     device=None,
     seed=42,
 ):
@@ -113,11 +114,16 @@ def train_model(
     if stratify is not None and len(np.unique(stratify)) < 2:
         stratify = None
 
+    # M4: use a larger val split for sparse targets so metrics are reliable
+    val_size = 0.3 if len(y) < 1000 else 0.2
+    if val_size > 0.2:
+        print(f"Sparse target ({len(y)} rows): using {int(val_size*100)}% val split")
+
     idx = np.arange(len(y))
     try:
-        train_idx, val_idx = train_test_split(idx, test_size=0.2, random_state=42, stratify=stratify)
+        train_idx, val_idx = train_test_split(idx, test_size=val_size, random_state=42, stratify=stratify)
     except ValueError:
-        train_idx, val_idx = train_test_split(idx, test_size=0.2, random_state=42)
+        train_idx, val_idx = train_test_split(idx, test_size=val_size, random_state=42)
 
     def make_loader(indices, shuffle):
         ds = PrettyFlyDataset(X_cat[indices], X_num[indices], y[indices], task_type)
@@ -134,11 +140,16 @@ def train_model(
     ).to(device)
 
     optimiser = torch.optim.Adam(model.parameters(), lr=lr)
+    # M3: halve LR when val_loss hasn't improved meaningfully for 3 epochs
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimiser, mode="min", factor=0.5, patience=3, min_lr=1e-6
+    )
     loss_fn   = get_loss_fn(task_type)
 
     best_val_loss = float("inf")
     best_weights  = None
     patience_left = patience
+    current_lr    = lr
 
     for epoch in range(1, epochs + 1):
         # train
@@ -179,9 +190,16 @@ def train_model(
                 all_targets.extend(yb.cpu().numpy())
         val_loss /= len(val_idx)
 
-        tqdm.write(f"Epoch {epoch:3d}/{epochs} | train_loss={train_loss:.4f} | val_loss={val_loss:.4f}")
+        # M3: step scheduler; note if LR was reduced
+        scheduler.step(val_loss)
+        new_lr = optimiser.param_groups[0]["lr"]
+        lr_tag = f" | lr={new_lr:.2e} ↓" if new_lr < current_lr else ""
+        current_lr = new_lr
 
-        if val_loss < best_val_loss:
+        tqdm.write(f"Epoch {epoch:3d}/{epochs} | train_loss={train_loss:.4f} | val_loss={val_loss:.4f}{lr_tag}")
+
+        # M1: only count as improvement if delta exceeds min_delta threshold
+        if best_val_loss - val_loss > min_delta:
             best_val_loss = val_loss
             best_weights  = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             patience_left = patience
