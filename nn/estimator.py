@@ -129,8 +129,10 @@ def print_results(target_col, task_type, metric_name, val_metric,
     print("  Top 10 Feature Importances (permutation):")
     print(f"  {'Rank':<5} {'Feature':<35} {'Delta Loss':>10}")
     print("  " + "-" * 52)
+    top_score = max((s for _, s in ranked_importance[:10]), default=1) or 1
     for rank, (feat, score) in enumerate(ranked_importance[:10], 1):
-        bar = "█" * min(int(score * 200), 20) if score > 0 else ""
+        # B3: normalize bar width relative to top feature so all bars are visible
+        bar = "█" * int(20 * score / top_score) if score > 0 else ""
         print(f"  {rank:<5} {feat:<35} {score:>10.5f}  {bar}")
 
     print()

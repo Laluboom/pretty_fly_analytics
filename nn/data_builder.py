@@ -201,6 +201,21 @@ CATEGORICAL_COLS = [
     "financial_status",
 ]
 
+# B1: columns that directly encode the target and must be excluded as features.
+# Without this, models reach AUC=1.0 by reading the answer rather than predicting it.
+LEAKAGE_MAP = {
+    "has_refund": ["financial_status", "refund_reason", "refund_amount"],
+    "has_ticket": ["ticket_category", "resolved_by", "resolution_time_minutes",
+                   "satisfaction_rating", "support_channel"],
+}
+
+# B2: targets where the feature table contains rows that are structurally 0
+# (not a real measurement) — filter to meaningful rows only before training.
+# resolution_time_minutes is 0.0 for 97.6% of rows (orders with no ticket).
+FILTER_MAP = {
+    "resolution_time_minutes": ("has_ticket", 1),
+}
+
 
 def _encode_and_scale(df, target_col):
     df = df.copy()
@@ -312,7 +327,24 @@ def prepare_for_target(df, target_col):
         available = sorted(df.columns.tolist())
         raise ValueError(f"'{target_col}' not found. Available columns:\n{available}")
 
-    df_encoded, feature_meta = _encode_and_scale(df, target_col)
+    df_clean = df.copy()
+
+    # B1: drop leakage columns that directly encode this target
+    leakage_cols = LEAKAGE_MAP.get(target_col, [])
+    if leakage_cols:
+        drop = [c for c in leakage_cols if c in df_clean.columns]
+        df_clean = df_clean.drop(columns=drop)
+        print(f"Leakage: dropped {drop}")
+
+    # B2: filter to rows where the target is a real measurement (not a structural zero)
+    if target_col in FILTER_MAP:
+        filter_col, filter_val = FILTER_MAP[target_col]
+        if filter_col in df_clean.columns:
+            before = len(df_clean)
+            df_clean = df_clean[df_clean[filter_col] == filter_val].copy()
+            print(f"Filter : {filter_col}=={filter_val} → {len(df_clean):,} rows (from {before:,})")
+
+    df_encoded, feature_meta = _encode_and_scale(df_clean, target_col)
     X_cat, X_num, y, task_type, n_classes, target_encoder = get_X_y(df_encoded, feature_meta, target_col)
 
     print(f"Target : {target_col}")

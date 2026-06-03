@@ -96,7 +96,14 @@ def train_model(
     lr=1e-3,
     patience=5,
     device=None,
+    seed=42,
 ):
+    # M2: seed everything for reproducible weight init and dropout
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
