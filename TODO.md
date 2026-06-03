@@ -3,11 +3,18 @@
 
 ---
 
-## Phase 0 — Setup
-- [ ] Create `nn/` directory inside `pretty_fly_data_pack/`
-- [ ] Create `requirements_nn.txt` with: `torch`, `pandas`, `numpy`, `scikit-learn`, `tqdm`
-- [ ] Run `pip install -r requirements_nn.txt` and confirm imports work
-- [ ] Confirm `data/` path is accessible from `nn/` (use `../data/` relative paths or pass as arg)
+## Phase 0 — Setup ✅ DONE
+- [x] Create `nn/` directory inside `pretty_fly_data_pack/`
+- [x] Create `requirements_nn.txt` with: `torch`, `pandas`, `numpy`, `scikit-learn`, `tqdm`
+- [x] Run `pip install -r requirements_nn.txt` and confirm imports work
+- [x] Confirm `data/` path is accessible from `nn/` (use `../data/` relative paths or pass as arg)
+
+> **What was done:**
+> - Created `pretty_fly_data_pack/nn/` directory (empty, ready for Phase 1 files)
+> - Created `requirements_nn.txt` at project root with 5 dependencies: `torch`, `pandas`, `numpy`, `scikit-learn`, `tqdm`
+> - Installed all dependencies via `pip3 install --break-system-packages`
+> - Verified with `python3 -c "import torch; import pandas; ..."` — all imports OK
+> - Git repo was already initialised (`origin/main`); all new files (`PRD_neural_estimator.md`, `TODO.md`, `requirements_nn.txt`) are tracked
 
 ---
 
