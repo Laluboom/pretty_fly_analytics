@@ -167,12 +167,22 @@
 
 ---
 
-## Phase 5 — Polish (if time allows)
+## Phase 5 — Polish ✅ DONE
 
-- [ ] Add `--save_model` flag to `estimator.py` → saves `model.pt` + `feature_meta.pkl`
-- [ ] Add `--predict` flag: load saved model, accept a JSON row of features, return prediction
-- [ ] Add a `--plot` flag: save a bar chart of feature importances as `importance_{target}.png`
-- [ ] Write `README_nn.md` with 3 example CLI invocations and sample output
+- [x] `--save_model <prefix>` → saves `{prefix}.pt` (state dict) + `{prefix}.pkl` (feature_meta, task_type, n_classes, encoders, scaler, target_encoder)
+- [x] `--predict <json_or_path> --load_model <prefix>` → loads saved model, fills missing fields with `0`/`"unknown"` defaults, decodes classification labels, prints prediction + confidence
+- [x] `--plot` → saves `importance_{target}.png` via matplotlib (1500×900px, 150 dpi, horizontal bar chart with delta-loss labels)
+- [x] `README_nn.md` — 4 CLI examples with sample output, all flags table, architecture diagram
+
+> **What was done:**
+> - Updated `nn/estimator.py` (+130 lines): added `save_model()`, `load_and_predict()`, `plot_importance()` functions; wired `--save_model`, `--predict`/`--load_model`, `--plot` flags into `main()`
+> - Added `matplotlib` to `requirements_nn.txt`
+> - Created `README_nn.md` (130 lines) at project root
+> - Verified: `--save_model` writes `models/product_type.pt` (334KB) + `.pkl` (5KB), all metadata intact
+> - Verified: `--predict` works with JSON string AND JSON file path; missing features default safely; no UserWarnings
+> - Verified: `--plot` writes valid 1500×900 PNG (96KB)
+> - Verified: `--predict` without `--load_model` exits 1 with clear error
+> - Git commit: `de2bf7d`
 
 ---
 
