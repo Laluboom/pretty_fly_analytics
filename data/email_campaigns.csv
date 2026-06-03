@@ -1,0 +1,7 @@
+campaign_id,name,type,sent_at,recipients,opens,clicks,unsubscribes,attributed_orders,attributed_revenue_gbp
+ec_0001,Abandoned_Cart,flow,,11656,2835,430,35,1457,190878.32
+ec_0002,Drop_Announcement,campaign,2024-06-01T10:00:00,8982,2303,298,30,1497,198991.77
+ec_0003,Restock_Alert,flow,,11392,2592,296,48,1424,185779.81
+ec_0004,Welcome_Flow,flow,,10952,2860,420,18,1369,179064.61
+ec_0005,Win_Back,flow,,11456,2969,367,21,1432,182910.15
+ec_0006,Womens_Welcome_Flow,flow,,4695,1687,431,7,282,37437.47

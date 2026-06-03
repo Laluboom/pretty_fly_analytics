@@ -1,0 +1,6 @@
+supplier_id,name,country,payment_terms,lead_time_days,currency
+sup_001,Porto Knit Co.,Portugal,50% deposit / 50% on shipment,60,EUR
+sup_002,Milano Trims SRL,Italy,50% deposit / 50% on shipment,75,EUR
+sup_003,Lisbon Garment Works,Portugal,50% deposit / 50% on shipment,55,EUR
+sup_004,Anatolian Textile Ltd,Turkey,Net 60,45,USD
+sup_005,Iberia Footwear SA,Portugal,50% deposit / 50% on shipment,90,EUR
