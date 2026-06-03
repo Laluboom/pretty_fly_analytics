@@ -1,6 +1,8 @@
 import argparse
 import sys
 import os
+import json
+import pickle
 import numpy as np
 import torch
 
@@ -25,6 +27,10 @@ def parse_args():
     parser.add_argument("--batch_size",  type=int,   default=512,   help="Batch size (default: 512)")
     parser.add_argument("--data_dir",    type=str,   default=None,  help="Path to data/ directory")
     parser.add_argument("--list_targets",action="store_true",       help="Print all valid target columns and exit")
+    parser.add_argument("--save_model",  type=str,   default=None,  help="Save model + metadata to this path prefix (e.g. models/has_refund)")
+    parser.add_argument("--predict",     type=str,   default=None,  help="JSON string or path to JSON file of feature values; requires --load_model")
+    parser.add_argument("--load_model",  type=str,   default=None,  help="Path prefix of saved model to load for --predict")
+    parser.add_argument("--plot",        action="store_true",        help="Save feature importance bar chart as importance_{target}.png")
     return parser.parse_args()
 
 
@@ -151,11 +157,148 @@ def print_results(target_col, task_type, metric_name, val_metric,
 
 
 # ---------------------------------------------------------------------------
+# 5.1  Save model
+# ---------------------------------------------------------------------------
+
+def save_model(model, feature_meta, task_type, n_classes, target_col, target_encoder, prefix):
+    os.makedirs(os.path.dirname(prefix) if os.path.dirname(prefix) else ".", exist_ok=True)
+    torch.save(model.state_dict(), f"{prefix}.pt")
+    meta = {
+        "feature_meta":   feature_meta,
+        "task_type":      task_type,
+        "n_classes":      n_classes,
+        "target_col":     target_col,
+        "target_encoder": target_encoder,
+        "n_num_features": len(feature_meta["num_cols"]),
+    }
+    with open(f"{prefix}.pkl", "wb") as f:
+        pickle.dump(meta, f)
+    print(f"\nModel saved: {prefix}.pt  +  {prefix}.pkl")
+
+
+# ---------------------------------------------------------------------------
+# 5.2  Load model + predict from JSON row
+# ---------------------------------------------------------------------------
+
+def load_and_predict(prefix, raw_input, data_dir=None):
+    with open(f"{prefix}.pkl", "rb") as f:
+        meta = pickle.load(f)
+
+    feature_meta   = meta["feature_meta"]
+    task_type      = meta["task_type"]
+    n_classes      = meta["n_classes"]
+    target_col     = meta["target_col"]
+    target_encoder = meta["target_encoder"]
+    n_num          = meta["n_num_features"]
+
+    model = PrettyFlyNet(
+        cat_vocab_sizes=feature_meta["cat_vocab_sizes"],
+        n_num_features=n_num,
+        task_type=task_type,
+        n_classes=n_classes,
+    )
+    model.load_state_dict(torch.load(f"{prefix}.pt", map_location="cpu"))
+    model.eval()
+
+    # Parse input
+    if os.path.isfile(raw_input):
+        with open(raw_input) as f:
+            row = json.load(f)
+    else:
+        row = json.loads(raw_input)
+
+    # Build cat and num arrays, filling missing with defaults
+    cat_cols = feature_meta["cat_cols"]
+    num_cols = feature_meta["num_cols"]
+    encoders = feature_meta["encoders"]
+    scaler   = feature_meta["scaler"]
+
+    # Encode categoricals
+    x_cat = []
+    for col in cat_cols:
+        val = str(row.get(col, "unknown"))
+        le  = encoders[col]
+        if val in le.classes_:
+            x_cat.append(le.transform([val])[0])
+        else:
+            x_cat.append(0)  # fallback to first class for unseen values
+
+    # Scale numerics — build a single-row DataFrame so sklearn doesn't warn about feature names
+    import pandas as pd
+    num_row = pd.DataFrame([[float(row.get(col, 0.0)) for col in num_cols]], columns=num_cols)
+    num_scaled = scaler.transform(num_row)[0].astype(np.float32)
+
+    x_cat_t = torch.tensor(np.array([x_cat]), dtype=torch.long)
+    x_num_t = torch.tensor(np.array([num_scaled]), dtype=torch.float32)
+
+    with torch.no_grad():
+        out = model(x_cat_t, x_num_t)
+
+    print(f"\nPredicting: {target_col}")
+    print(f"Input features used: {len(x_cat)} categorical + {len(num_scaled)} numeric")
+
+    if task_type == "binary":
+        prob = out.squeeze().item()
+        label = 1 if prob >= 0.5 else 0
+        print(f"Prediction : {label}  (probability={prob:.4f})")
+    elif task_type == "classification":
+        probs = torch.softmax(out, dim=1).squeeze().numpy()
+        pred_idx = int(probs.argmax())
+        if target_encoder:
+            pred_label = target_encoder.inverse_transform([pred_idx])[0]
+            print(f"Prediction : {pred_label}  (confidence={probs[pred_idx]:.4f})")
+        else:
+            print(f"Prediction : class {pred_idx}  (confidence={probs[pred_idx]:.4f})")
+    else:
+        val = out.squeeze().item()
+        print(f"Prediction : {val:.4f}")
+
+
+# ---------------------------------------------------------------------------
+# 5.3  Plot feature importance
+# ---------------------------------------------------------------------------
+
+def plot_importance(ranked, target_col, metric_name, val_metric):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    top_n   = 15
+    top     = ranked[:top_n]
+    names   = [f for f, _ in reversed(top)]
+    scores  = [s for _, s in reversed(top)]
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bars = ax.barh(names, scores, color="#2d6a9f", edgecolor="white")
+    ax.set_xlabel("Permutation Importance (Δ Loss)", fontsize=11)
+    ax.set_title(
+        f"Feature Importances — target: {target_col}\n{metric_name} = {val_metric:.4f}",
+        fontsize=13, fontweight="bold",
+    )
+    ax.bar_label(bars, fmt="%.4f", padding=3, fontsize=8)
+    ax.spines[["top", "right"]].set_visible(False)
+    plt.tight_layout()
+
+    out_path = f"importance_{target_col}.png"
+    plt.savefig(out_path, dpi=150)
+    plt.close()
+    print(f"\nImportance chart saved: {out_path}")
+
+
+# ---------------------------------------------------------------------------
 # 3.2  Main orchestration
 # ---------------------------------------------------------------------------
 
 def main():
     args = parse_args()
+
+    # --predict mode: skip training entirely, load saved model
+    if args.predict:
+        if not args.load_model:
+            print("Error: --predict requires --load_model <prefix>")
+            sys.exit(1)
+        load_and_predict(args.load_model, args.predict, args.data_dir)
+        return
 
     # Build feature table
     df = build_feature_table(args.data_dir)
@@ -204,6 +347,15 @@ def main():
         args.target, task_type, metric_name, val_metric,
         ranked, preds, targets, target_encoder,
     )
+
+    # --save_model
+    if args.save_model:
+        save_model(model, feature_meta, task_type, n_classes,
+                   args.target, target_encoder, args.save_model)
+
+    # --plot
+    if args.plot:
+        plot_importance(ranked, args.target, metric_name, val_metric)
 
 
 if __name__ == "__main__":
