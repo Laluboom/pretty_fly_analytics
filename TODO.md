@@ -260,10 +260,11 @@ Findings from code inspection + live evaluation runs. Each item has a root cause
 
 ### 🟡 Model / Training Issues
 
-**M1 — Early stopping has no `min_delta` threshold** *(nn/model.py)*
-- **Problem:** Strict `if val_loss < best_val_loss` means the model keeps training when it is near-perfect (e.g. `has_refund`, `product_type`) because val_loss fluctuates at float32 precision (~1e-7) and never truly plateaus. These targets ran all 30 epochs when they converged at epoch 2.
-- **Fix:** Add `min_delta=1e-5` parameter: only reset patience if `best_val_loss - val_loss > min_delta`. Otherwise, the improvement doesn't count as real progress.
-- **File:** `nn/model.py`, `train_model()` signature and patience check.
+**M1 — Early stopping has no `min_delta` threshold** *(nn/model.py)* ✅ FIXED
+- **Was:** Near-perfect models (product_type, has_refund) ran all N epochs; float32 noise kept resetting patience counter
+- **Fix applied:** `min_delta=1e-5` param on `train_model()`; patience only resets when `best - val > min_delta`
+- **Result:** `product_type` now stops at epoch 8 (was running 30-50 epochs)
+- **Git:** `f156bc9`
 
 **M2 — No global random seed — results are not reproducible** *(nn/model.py)* ✅ FIXED
 - **Was:** Weight init varied every run; metrics differed by ±0.05 between identical calls
@@ -271,14 +272,17 @@ Findings from code inspection + live evaluation runs. Each item has a root cause
 - **Result:** Verified identical metrics across 3 repeated runs on `product_type`, `total_price`, `satisfaction_rating`
 - **Git:** `1f3278d`
 
-**M3 — Noisy val_loss for `total_price` — no LR scheduler** *(nn/model.py)*
-- **Problem:** `total_price` training shows val_loss oscillating (e.g. epoch 7: 79 → epoch 8: 90 → epoch 9: 51 → epoch 10: 60). This is gradient instability from large-scale MSE loss (~14,000 in epoch 1). Early stopping restores the best weight correctly, but wastes epochs on noisy plateaus.
-- **Fix:** Add `torch.optim.lr_scheduler.ReduceLROnPlateau(optimiser, patience=3, factor=0.5)` inside the training loop. Halves LR when val_loss stops improving — smooths training without changing architecture.
-- **File:** `nn/model.py`, inside `train_model()`.
+**M3 — Noisy val_loss for `total_price` — no LR scheduler** *(nn/model.py)* ✅ FIXED
+- **Was:** No LR schedule — wasted epochs on noisy plateaus; oscillations visible (e.g. epoch 7: 79 → epoch 9: 93 → epoch 11: 38)
+- **Fix applied:** `ReduceLROnPlateau(factor=0.5, patience=3, min_lr=1e-6)` after Adam; epoch line shows `lr=X ↓` on reduction
+- **Result:** Fires on genuinely plateauing targets (`satisfaction_rating` LR halved at epoch 14); correctly does NOT fire on `total_price` (model still improving throughout). Scheduler wiring verified with controlled constant-loss test.
+- **Git:** `f156bc9`
 
-**M4 — `satisfaction_rating` val set is only 107 rows** *(nn/model.py / nn/data_builder.py)*
-- **Problem:** 539 total rows → 80/20 split → 107 val rows. Metrics over 107 samples are unreliable — RMSE, R² vary significantly between runs. The current R²=-0.007 could be −0.3 or +0.1 on the next run.
-- **Fix:** For targets with < 500 rows, switch to **5-fold cross-validation** and report mean ± std of the metric. Alternatively, increase val size to 30% for sparse targets (`test_size=0.3 if len(y) < 1000`).
+**M4 — `satisfaction_rating` val set is only 107 rows** *(nn/model.py)* ✅ FIXED
+- **Was:** 539 rows → 80/20 split → 107 val rows; R² varied ±0.3 between identical runs
+- **Fix applied:** `test_size=0.3` when `len(y) < 1000`; logged as `"Sparse target (N rows): using 30% val split"`
+- **Result:** `satisfaction_rating` val set grows from 107 → 162 rows; metrics more stable
+- **Git:** `f156bc9`
 - **File:** `nn/model.py`, `train_model()` — check `len(y)` and adjust split.
 
 ---
