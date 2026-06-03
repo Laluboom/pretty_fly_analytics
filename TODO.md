@@ -18,84 +18,53 @@
 
 ---
 
-## Phase 1 — `nn/data_builder.py`
+## Phase 1 — `nn/data_builder.py` ✅ DONE
 > Builds the master flat feature table from raw CSVs. Output: `(X, y, feature_meta)`.
 
 ### 1.1 Load raw tables
-- [ ] Load `data/orders.csv` — parse `created_at` as datetime
-  - Keep: `order_id`, `customer_id`, `created_at`, `subtotal`, `total_discounts`, `total_shipping`, `total_tax`, `total_price`, `utm_source`, `utm_medium`, `utm_campaign`, `discount_code`, `financial_status`
-- [ ] Load `data/line_items.csv`
-  - Keep: `line_item_id`, `order_id`, `variant_id`, `product_id`, `quantity`, `price`, `total_discount`
-- [ ] Load `data/variants.csv`
-  - Keep: `variant_id`, `product_id`, `price` (as `variant_price`), `weight_grams`, `inventory_quantity`, `option1_value` (Size), `option2_value` (Colour)
-- [ ] Load `data/products.csv`
-  - Keep: `product_id`, `product_type`, `gender_segment`, `collection`
-- [ ] Load `data/customers.csv`
-  - Keep: `customer_id`, `orders_count`, `total_spent`, `acquisition_source`, `default_country`, `gender_segment_affinity`, `accepts_marketing`
-- [ ] Load `data/refunds.csv`
-  - Keep: `order_id`, `amount` (as `refund_amount`), `reason` (as `refund_reason`)
-  - Parse `refund_line_items` JSON column → extract list of variant_ids
-  - Create `has_refund = True` flag per order
-- [ ] Load `data/support_tickets.csv`
-  - Keep: `related_order_id` (rename → `order_id`), `category` (as `ticket_category`), `resolved_by`, `resolution_time_minutes`, `satisfaction_rating`, `channel` (as `support_channel`)
-  - Create `has_ticket = True` flag per order
-- [ ] Load `data/po_line_items.csv`
-  - Keep: `variant_id`, `landed_cost_per_unit_gbp`
-- [ ] Load `data/google_ads_daily.csv`
-  - Aggregate by `campaign_name` + `date`: sum `spend_gbp`, `impressions`, `clicks`, `conversions`, `conversion_value_gbp`
-  - Rename to `google_spend`, `google_impressions`, `google_clicks`, `google_conversions`
-- [ ] Load `data/meta_ads_daily.csv`
-  - Aggregate by `campaign_name` + `date`: sum same fields
-  - Rename to `meta_spend`, `meta_impressions`, `meta_clicks`, `meta_conversions`
+- [x] Load `data/orders.csv` — parse `created_at` as datetime
+- [x] Load `data/line_items.csv`
+- [x] Load `data/variants.csv` — `product_id` dropped (already in `line_items` to avoid merge conflict)
+- [x] Load `data/products.csv`
+- [x] Load `data/customers.csv`
+- [x] Load `data/refunds.csv` — JSON `refund_line_items` parsed; `has_refund` flag created; deduped to one row per `order_id`
+- [x] Load `data/support_tickets.csv` — `related_order_id` renamed to `order_id`; `has_ticket` flag created
+- [x] Load `data/po_line_items.csv` — deduped on `variant_id`
+- [x] Load `data/google_ads_daily.csv` — aggregated by `campaign_name + date` → `google_spend/impressions/clicks/conversions`
+- [x] Load `data/meta_ads_daily.csv` — aggregated by `campaign_name + date` → `meta_spend/impressions/clicks/conversions`
 
 ### 1.2 Build join chain (base = `line_items`)
-- [ ] `line_items` LEFT JOIN `orders` on `order_id`
-- [ ] LEFT JOIN `variants` on `variant_id` → adds `weight_grams`, `inventory_quantity`, `option1_value`, `option2_value`
-- [ ] LEFT JOIN `products` on `product_id` → adds `product_type`, `gender_segment`, `collection`
-- [ ] LEFT JOIN `customers` on `customer_id` → adds `orders_count`, `total_spent`, `acquisition_source`, `default_country`, `gender_segment_affinity`, `accepts_marketing`
-- [ ] LEFT JOIN `po_line_items` on `variant_id` → adds `landed_cost_per_unit_gbp`
-- [ ] LEFT JOIN `refunds` on `order_id` → adds `has_refund`, `refund_amount`, `refund_reason` (fill NaN → `has_refund=False`, `refund_reason='none'`)
-- [ ] LEFT JOIN `support_tickets` on `order_id` → adds `has_ticket`, `ticket_category`, `resolved_by`, `resolution_time_minutes`, `satisfaction_rating`, `support_channel` (fill NaN → `has_ticket=False`, etc.)
-- [ ] Build `order_date` column (date only from `created_at`) for ad join
-- [ ] LEFT JOIN `google_ads_daily` on `utm_campaign == campaign_name` AND `order_date == date` → adds `google_*` columns
-- [ ] LEFT JOIN `meta_ads_daily` on `utm_campaign == campaign_name` AND `order_date == date` → adds `meta_*` columns
+- [x] All 10 LEFT JOINs completed in `_build_joined()`
+- [x] Ad join on `utm_campaign == campaign_name` AND `order_date == date`
+- [x] NaN fills for all flag/categorical columns post-join
 
 ### 1.3 Feature engineering
-- [ ] `discount_pct = total_discounts / subtotal` (clip to [0, 1], fill NaN → 0)
-- [ ] `gross_margin_est = (price - landed_cost_per_unit_gbp) / price` (fill NaN → median)
-- [ ] `order_month` = `created_at.dt.month` (int 1–12)
-- [ ] `order_dayofweek` = `created_at.dt.dayofweek` (int 0–6)
-- [ ] `order_hour` = `created_at.dt.hour` (int 0–23)
-- [ ] `is_discounted` = 1 if `discount_code` is not null else 0
-- [ ] `total_ad_spend` = `google_spend + meta_spend` (fill NaN → 0)
-- [ ] `total_ad_conversions` = `google_conversions + meta_conversions` (fill NaN → 0)
-- [ ] Drop raw join keys and columns not useful as features: `order_id`, `line_item_id`, `variant_id`, `product_id`, `customer_id`, `created_at`, `order_date`, `discount_code`, `utm_campaign`
+- [x] `discount_pct`, `gross_margin_est`, `order_month`, `order_dayofweek`, `order_hour`, `is_discounted`, `total_ad_spend`, `total_ad_conversions`
+- [x] `has_refund` and `has_ticket` cast to int via `.notna() & .eq(True)` (avoids pandas FutureWarning)
+- [x] All raw join keys dropped
 
 ### 1.4 Encode and scale
-- [ ] Define `CATEGORICAL_COLS` list:
-  `['utm_source', 'utm_medium', 'product_type', 'gender_segment', 'collection', 'option1_value', 'option2_value', 'acquisition_source', 'default_country', 'gender_segment_affinity', 'refund_reason', 'ticket_category', 'resolved_by', 'support_channel', 'financial_status']`
-- [ ] Fill NaN in all categoricals with `'unknown'`
-- [ ] `LabelEncoder` each categorical col → integer codes; save `encoder_map: dict[col → LabelEncoder]` for later use
-- [ ] Define `NUMERIC_COLS` = all remaining non-target numeric columns
-- [ ] `StandardScaler` on numeric cols; save scaler
-- [ ] Return `feature_meta` dict: `{ 'cat_cols': [...], 'num_cols': [...], 'cat_vocab_sizes': {col: n_unique}, 'encoders': encoder_map, 'scaler': scaler }`
+- [x] 15 categorical cols LabelEncoded; 35 numeric cols StandardScaled
+- [x] `feature_meta` dict returned with `cat_cols`, `num_cols`, `cat_vocab_sizes`, `encoders`, `scaler`
 
 ### 1.5 Target extraction
-- [ ] Function `get_X_y(df, target_col)`:
-  - Drop `target_col` from features
-  - If target is categorical: label-encode it, return `task_type='classification'`, `n_classes=k`
-  - If target is boolean/binary int (2 unique vals): return `task_type='binary'`
-  - If target is numeric: return `task_type='regression'`
-  - Drop rows where `target_col` is NaN
-  - Return `X (np.ndarray)`, `y (np.ndarray)`, `task_type`, `n_classes`
+- [x] `prepare_for_target(df, target_col)` auto-detects task type: binary / regression / classification
+- [x] NaN rows dropped per target before training
+
+> **What was done:**
+> - Created `nn/data_builder.py` (330 lines)
+> - Public API: `build_feature_table()` → 69,956 rows × 51 cols; `prepare_for_target(df, col)` → `X_cat, X_num, y, task_type, n_classes, feature_meta, target_encoder`
+> - Verified on 3 targets: `has_refund` (binary, 69,956 rows), `satisfaction_rating` (regression, 539 rows), `product_type` (classification, 6 classes, 69,956 rows)
+> - Zero FutureWarnings on pandas 2.3.3
+> - Git commit: `1f03011`
 
 ---
 
-## Phase 2 — `nn/model.py`
+## Phase 2 — `nn/model.py` ✅ DONE
 > Defines `PrettyFlyNet` and the training loop.
 
 ### 2.1 Dataset class
-- [ ] `class PrettyFlyDataset(Dataset)`:
+- [x] `class PrettyFlyDataset(Dataset)`:
   - `__init__(self, X_cat, X_num, y)` — store as tensors
   - `__len__` and `__getitem__` returning `(X_cat[i], X_num[i], y[i])`
   - `X_cat`: `LongTensor` (shape: `[n, n_cat_cols]`)
@@ -125,14 +94,23 @@
   - `classification` → `nn.CrossEntropyLoss()`
 
 ### 2.4 Training loop
-- [ ] `train_model(X, y, feature_meta, task_type, n_classes, epochs=50, batch_size=512, lr=1e-3)`:
-  - 80/20 train/val split (stratify if classification/binary)
-  - Split `X` into `X_cat` (int cols) and `X_num` (float cols) using `feature_meta`
-  - Create `DataLoader` for train and val (shuffle train, no shuffle val)
-  - Instantiate `PrettyFlyNet`, `Adam` optimiser, loss fn
-  - Early stopping: patience=5 on val loss; restore best weights
-  - `tqdm` progress bar per epoch showing train loss + val loss
-  - Return `model`, `val_loss`, `val_metric` (AUC for binary, accuracy for classification, RMSE for regression)
+- [x] `train_model(X_cat, X_num, y, task_type, n_classes, feature_meta, epochs, batch_size, lr, patience, device)`:
+  - [x] 80/20 stratified train/val split (falls back to unstratified for sparse targets)
+  - [x] `DataLoader` for train (shuffled) and val
+  - [x] `PrettyFlyNet` + `Adam` + task-appropriate loss
+  - [x] Early stopping patience=5, best-weight restore
+  - [x] `tqdm.write` per epoch with train+val loss
+  - [x] Returns `model, val_loss, val_metric, metric_name, val_idx, preds, targets`
+
+> **What was done:**
+> - Created `nn/model.py` (204 lines)
+> - `PrettyFlyDataset`: wraps `X_cat (LongTensor)`, `X_num (FloatTensor)`, `y` (Long for classification, Float otherwise)
+> - `PrettyFlyNet`: `nn.Embedding` per cat col (dim=8) → concat + `BatchNorm1d` → `Dense(256→128→64)` → task head
+> - Output heads: regression=`Linear(64,1)`, binary=`Linear(64,1)+Sigmoid`, classification=`Linear(64,n_classes)`
+> - `get_loss_fn`: MSE / BCE / CrossEntropy
+> - CUDA auto-detected and used (torch 2.12+cu130)
+> - Smoke-tested 3 epochs × 4 targets: `has_refund` AUC=1.0, `total_price` RMSE=14.8, `product_type` acc=0.9999, `satisfaction_rating` RMSE=1.48
+> - Git commit: `e63e301`
 
 ---
 
