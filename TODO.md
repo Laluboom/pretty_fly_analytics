@@ -186,6 +186,23 @@
 
 ---
 
+## Phase 6 — Evaluation & Report ✅ DONE
+
+- [x] `nn/evaluate.py` — comprehensive metrics per task type: binary (AUC, AP, precision, recall, F1, confusion matrix, ROC curve, score distribution, PR curve), regression (RMSE, MAE, R², median abs error, within ±10%/±20%, residual plots), classification (accuracy, macro/weighted F1, per-class breakdown, confusion matrix, per-class accuracy/F1 bar charts)
+- [x] `--all` flag runs all 6 key targets in sequence with summary table
+- [x] `--plot` saves 6-panel `eval_{target}.png` for each run
+- [x] `REPORT.md` — full system guide + live evaluation results for all 6 targets
+
+> **What was done:**
+> - Created `nn/evaluate.py` (450 lines): `eval_binary()`, `eval_regression()`, `eval_classification()` metric suites; `print_*_report()` printers with ASCII bar charts; `make_plots()` generating 6-panel matplotlib figures; `--all` batch mode with summary table
+> - Fixed histogram edge case: perfect binary model outputs exactly 0/1, so fixed `np.linspace(0,1,42)` bin edges instead of auto-bins
+> - Created `REPORT.md` (250 lines): architecture diagram, join chain, feature engineering table, full metrics for all 6 targets, feature importance findings, worked examples, caveats, quick reference
+> - Generated 6 evaluation charts: `eval_has_refund.png`, `eval_satisfaction_rating.png`, `eval_total_price.png`, `eval_product_type.png`, `eval_resolved_by.png`, `eval_resolution_time_minutes.png`
+> - Key findings: `total_price` R²=0.997, `product_type` acc=0.9999, `resolved_by` acc=0.9993, `resolution_time_minutes` 53% better than naive, `satisfaction_rating` needs richer features (only 539 rows)
+> - Git commit: see below
+
+---
+
 ## Quick Reference: Key Column Names per File
 
 | File | Target-worthy columns |
