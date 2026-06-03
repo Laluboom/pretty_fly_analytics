@@ -238,21 +238,23 @@ Findings from code inspection + live evaluation runs. Each item has a root cause
 
 ### 🔴 Bugs / Data Issues
 
-**B1 — Data leakage in `has_refund` target** *(nn/data_builder.py)*
-- **Problem:** `financial_status` (`"partially_refunded"`), `refund_reason`, and `refund_amount` are in the feature table when `has_refund` is the target. They directly encode whether a refund occurred — the model gets AUC=1.0 by reading the answer, not predicting it.
-- **Fix:** Add a `LEAKAGE_MAP` dict in `data_builder.py` mapping each target to columns that must be excluded. For `has_refund`: exclude `financial_status`, `refund_reason`, `refund_amount`. Pass this into `prepare_for_target()` and drop those cols before encoding.
-- **Impact:** Without the fix, `has_refund` results are meaningless as a *predictor*. With fix, expect AUC ~0.6–0.75 — a real, useful signal.
+**B1 — Data leakage in `has_refund` target** *(nn/data_builder.py)* ✅ FIXED
+- **Was:** AUC=1.0000 (fake — `financial_status`, `refund_reason`, `refund_amount` encoded the answer)
+- **Fix applied:** `LEAKAGE_MAP` in `data_builder.py`; `prepare_for_target()` drops leakage cols and logs `"Leakage: dropped [...]"`
+- **Result:** AUC=0.6596 (honest), top features now `subtotal`, `total_price`, `product_type`
+- **Git:** `1f3278d`
 
-**B2 — `resolution_time_minutes` is 97.6% zeros** *(nn/data_builder.py)*
-- **Problem:** 68,251 of 69,956 rows have `resolution_time_minutes = 0` (orders with no support ticket). The model learns to predict 0 for almost everything and achieves low RMSE by ignoring the 1,705 actual ticket rows. R²=0.78 looks good but is inflated by the zero mass.
-- **Fix — Option A (quick):** Filter to ticket rows only when this is the target: `df = df[df['has_ticket'] == 1]` inside `prepare_for_target()` for this column (1,705 rows → honest regression on resolution time).
-- **Fix — Option B (better):** Split into two tasks: (1) binary `has_ticket` (will there be a ticket?), (2) regression `resolution_time_minutes` on ticket-only rows. Both are meaningful independently.
-- **Impact:** Current median error of 3 seconds is an artefact of predicting 0 for non-ticket rows. Real median on ticket rows is 242 minutes.
+**B2 — `resolution_time_minutes` is 97.6% zeros** *(nn/data_builder.py)* ✅ FIXED
+- **Was:** RMSE=50 min with R²=0.78 — inflated by predicting 0 for 68,251 non-ticket rows
+- **Fix applied:** `FILTER_MAP` in `data_builder.py`; filters to `has_ticket==1` (1,705 rows) for this target. Logs `"Filter: has_ticket==1 → 1,705 rows (from 69,956)"`
+- **Result:** RMSE=323 min on real ticket data, y range [5, 1439] min, zero structural zeros
+- **Git:** `1f3278d`
 
-**B3 — Bar chart scaling in estimator uses fixed multiplier** *(nn/estimator.py:133)*
-- **Problem:** `bar = "█" * min(int(score * 200), 20)`. When one feature dominates (e.g. `subtotal` score=14,450 for `total_price`), all other features get bar `""` (score × 200 < 1). The chart looks like only 1 feature matters, even when #2–10 have real signal.
-- **Fix:** Normalize relative to the top score: `bar_width = int(28 * score / max_score)` — same fix already used correctly in `evaluate.py:_bar()`. Apply the same to `estimator.py:print_results()`.
-- **File:** `nn/estimator.py`, line 133
+**B3 — Bar chart scaling in estimator uses fixed multiplier** *(nn/estimator.py:133)* ✅ FIXED
+- **Was:** `score * 200` — all top features showed identical 20-bar width when scores were large
+- **Fix applied:** `int(20 * score / top_score)` — bars now proportional relative to top feature
+- **Result:** `subtotal` = 20 bars, `total_tax` = 2 bars, `total_shipping` = 1 bar (correct proportions)
+- **Git:** `1f3278d`
 
 ---
 
@@ -263,10 +265,11 @@ Findings from code inspection + live evaluation runs. Each item has a root cause
 - **Fix:** Add `min_delta=1e-5` parameter: only reset patience if `best_val_loss - val_loss > min_delta`. Otherwise, the improvement doesn't count as real progress.
 - **File:** `nn/model.py`, `train_model()` signature and patience check.
 
-**M2 — No global random seed — results are not reproducible** *(nn/model.py)*
-- **Problem:** `torch.manual_seed()` is never called. Model weight initialisation is different every run, so training metrics and feature importances vary between runs. `train_test_split(random_state=42)` and permutation RNG are seeded, but the model itself is not.
-- **Fix:** Add `seed=42` parameter to `train_model()`. At the top of the function: `torch.manual_seed(seed); np.random.seed(seed)`. Also add `torch.backends.cudnn.deterministic = True` for CUDA reproducibility.
-- **File:** `nn/model.py`, `train_model()`.
+**M2 — No global random seed — results are not reproducible** *(nn/model.py)* ✅ FIXED
+- **Was:** Weight init varied every run; metrics differed by ±0.05 between identical calls
+- **Fix applied:** `seed=42` param on `train_model()`; seeds `torch`, `numpy`, `torch.cuda` at function start
+- **Result:** Verified identical metrics across 3 repeated runs on `product_type`, `total_price`, `satisfaction_rating`
+- **Git:** `1f3278d`
 
 **M3 — Noisy val_loss for `total_price` — no LR scheduler** *(nn/model.py)*
 - **Problem:** `total_price` training shows val_loss oscillating (e.g. epoch 7: 79 → epoch 8: 90 → epoch 9: 51 → epoch 10: 60). This is gradient instability from large-scale MSE loss (~14,000 in epoch 1). Early stopping restores the best weight correctly, but wastes epochs on noisy plateaus.
