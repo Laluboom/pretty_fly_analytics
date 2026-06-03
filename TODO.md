@@ -227,3 +227,108 @@
 | Phase 4 — Validation | 30 min |
 | Phase 5 — Polish | remaining |
 | **Total** | **~3h 40min** |
+
+---
+
+## Improvements & Fixes (post-build audit)
+
+Findings from code inspection + live evaluation runs. Each item has a root cause and a concrete fix.
+
+---
+
+### 🔴 Bugs / Data Issues
+
+**B1 — Data leakage in `has_refund` target** *(nn/data_builder.py)*
+- **Problem:** `financial_status` (`"partially_refunded"`), `refund_reason`, and `refund_amount` are in the feature table when `has_refund` is the target. They directly encode whether a refund occurred — the model gets AUC=1.0 by reading the answer, not predicting it.
+- **Fix:** Add a `LEAKAGE_MAP` dict in `data_builder.py` mapping each target to columns that must be excluded. For `has_refund`: exclude `financial_status`, `refund_reason`, `refund_amount`. Pass this into `prepare_for_target()` and drop those cols before encoding.
+- **Impact:** Without the fix, `has_refund` results are meaningless as a *predictor*. With fix, expect AUC ~0.6–0.75 — a real, useful signal.
+
+**B2 — `resolution_time_minutes` is 97.6% zeros** *(nn/data_builder.py)*
+- **Problem:** 68,251 of 69,956 rows have `resolution_time_minutes = 0` (orders with no support ticket). The model learns to predict 0 for almost everything and achieves low RMSE by ignoring the 1,705 actual ticket rows. R²=0.78 looks good but is inflated by the zero mass.
+- **Fix — Option A (quick):** Filter to ticket rows only when this is the target: `df = df[df['has_ticket'] == 1]` inside `prepare_for_target()` for this column (1,705 rows → honest regression on resolution time).
+- **Fix — Option B (better):** Split into two tasks: (1) binary `has_ticket` (will there be a ticket?), (2) regression `resolution_time_minutes` on ticket-only rows. Both are meaningful independently.
+- **Impact:** Current median error of 3 seconds is an artefact of predicting 0 for non-ticket rows. Real median on ticket rows is 242 minutes.
+
+**B3 — Bar chart scaling in estimator uses fixed multiplier** *(nn/estimator.py:133)*
+- **Problem:** `bar = "█" * min(int(score * 200), 20)`. When one feature dominates (e.g. `subtotal` score=14,450 for `total_price`), all other features get bar `""` (score × 200 < 1). The chart looks like only 1 feature matters, even when #2–10 have real signal.
+- **Fix:** Normalize relative to the top score: `bar_width = int(28 * score / max_score)` — same fix already used correctly in `evaluate.py:_bar()`. Apply the same to `estimator.py:print_results()`.
+- **File:** `nn/estimator.py`, line 133
+
+---
+
+### 🟡 Model / Training Issues
+
+**M1 — Early stopping has no `min_delta` threshold** *(nn/model.py)*
+- **Problem:** Strict `if val_loss < best_val_loss` means the model keeps training when it is near-perfect (e.g. `has_refund`, `product_type`) because val_loss fluctuates at float32 precision (~1e-7) and never truly plateaus. These targets ran all 30 epochs when they converged at epoch 2.
+- **Fix:** Add `min_delta=1e-5` parameter: only reset patience if `best_val_loss - val_loss > min_delta`. Otherwise, the improvement doesn't count as real progress.
+- **File:** `nn/model.py`, `train_model()` signature and patience check.
+
+**M2 — No global random seed — results are not reproducible** *(nn/model.py)*
+- **Problem:** `torch.manual_seed()` is never called. Model weight initialisation is different every run, so training metrics and feature importances vary between runs. `train_test_split(random_state=42)` and permutation RNG are seeded, but the model itself is not.
+- **Fix:** Add `seed=42` parameter to `train_model()`. At the top of the function: `torch.manual_seed(seed); np.random.seed(seed)`. Also add `torch.backends.cudnn.deterministic = True` for CUDA reproducibility.
+- **File:** `nn/model.py`, `train_model()`.
+
+**M3 — Noisy val_loss for `total_price` — no LR scheduler** *(nn/model.py)*
+- **Problem:** `total_price` training shows val_loss oscillating (e.g. epoch 7: 79 → epoch 8: 90 → epoch 9: 51 → epoch 10: 60). This is gradient instability from large-scale MSE loss (~14,000 in epoch 1). Early stopping restores the best weight correctly, but wastes epochs on noisy plateaus.
+- **Fix:** Add `torch.optim.lr_scheduler.ReduceLROnPlateau(optimiser, patience=3, factor=0.5)` inside the training loop. Halves LR when val_loss stops improving — smooths training without changing architecture.
+- **File:** `nn/model.py`, inside `train_model()`.
+
+**M4 — `satisfaction_rating` val set is only 107 rows** *(nn/model.py / nn/data_builder.py)*
+- **Problem:** 539 total rows → 80/20 split → 107 val rows. Metrics over 107 samples are unreliable — RMSE, R² vary significantly between runs. The current R²=-0.007 could be −0.3 or +0.1 on the next run.
+- **Fix:** For targets with < 500 rows, switch to **5-fold cross-validation** and report mean ± std of the metric. Alternatively, increase val size to 30% for sparse targets (`test_size=0.3 if len(y) < 1000`).
+- **File:** `nn/model.py`, `train_model()` — check `len(y)` and adjust split.
+
+---
+
+### 🟢 Feature / Data Improvements
+
+**F1 — Sentiment features from `support_messages.json` not used** *(nn/data_builder.py)*
+- **Problem:** `support_messages.json` contains full conversation text (customer/bot/human turns) for all 1,204 tickets. This is the richest signal for `satisfaction_rating` and `resolved_by` targets, but it is never loaded. The current `satisfaction_rating` model performs at naive baseline (R²≈0) because subjective satisfaction isn't encoded anywhere in the current features.
+- **Fix:** Load `support_messages.json`, compute per-ticket features: `msg_count`, `customer_msg_count`, `avg_customer_msg_length`, `n_escalations` (bot→human handoffs), `response_time_first` (seconds to first agent reply). Join to `support_tickets` on `ticket_id` → `order_id`. This alone would likely push `satisfaction_rating` RMSE below 1.0.
+- **File:** Add `_load_support_messages()` to `nn/data_builder.py`, join in `_build_joined()`.
+
+**F2 — Ad join is campaign-day level, not order-specific** *(nn/data_builder.py)*
+- **Problem:** Multiple orders in the same campaign on the same day share identical ad features. There are 18 campaign names and ~730 unique campaign-days in the dataset — so ad features are effectively campaign-period averages, not per-order signals. This limits ad-related targets (`google_conversions`, `meta_conversions`).
+- **Fix (pragmatic):** Document this clearly in a comment in `_build_joined()`. The fix would require knowing which ad impression led to which click led to which order — that data doesn't exist in this dataset. Current approach is the best possible with available data.
+- **File:** `nn/data_builder.py`, `_build_joined()` — add a comment.
+
+**F3 — `gross_margin_est` fill uses a confusing lambda pipe** *(nn/data_builder.py:169–171)*
+- **Problem:** The fill for `gross_margin_est` when `landed_cost_per_unit_gbp` is missing uses `df["price"].pipe(lambda s: (s - s.median()) / s.replace(0, np.nan)).fillna(0)`. In practice, all 69,956 rows have a landed cost (0% missing verified), so the fallback never fires — but the formula is wrong anyway (it computes a normalised price deviation, not a margin).
+- **Fix:** Since there are zero missing values, simplify to just fill with the global median margin: `.fillna(df["gross_margin_est"].median())` after the initial computation. Cleaner and correct.
+- **File:** `nn/data_builder.py`, line 169–171.
+
+---
+
+### 🔵 UX / CLI Improvements
+
+**U1 — `--predict` doesn't validate column names in JSON input**
+- **Problem:** If you pass `--predict '{"pric": 85.0}'` (typo), it silently uses `0.0` for `price`. The user gets a prediction with no warning that their input was ignored.
+- **Fix:** In `load_and_predict()`, after parsing the JSON row, print a warning for any key not found in `cat_cols + num_cols`: `Unknown input keys (ignored): {set(row.keys()) - set(all_feature_cols)}`.
+- **File:** `nn/estimator.py`, `load_and_predict()`.
+
+**U2 — No `--leakage_exclude` flag for `has_refund`-style targets**
+- **Problem:** There is no way to run `has_refund` as a genuine predictor without manually editing `data_builder.py`. Users demoing this tool should be able to test the honest version.
+- **Fix (ties to B1):** Once `LEAKAGE_MAP` is added in B1, expose it via CLI: `--exclude_cols financial_status,refund_reason,refund_amount`. Overrides or extends the default leakage map.
+- **File:** `nn/estimator.py`, `parse_args()` + `main()`.
+
+**U3 — `evaluate.py --all` reloads the feature table 6 times**
+- **Problem:** `build_feature_table()` is called inside `run_target()` on each of the 6 targets. Each call re-reads and re-joins all 10 CSVs (~3s per call = 18s wasted).
+- **Fix:** Build the table once in `main()` and pass `df` as an argument to `run_target(df, ...)`.
+- **File:** `nn/evaluate.py`, `main()` and `run_target()` signature.
+
+---
+
+### Priority order for hackathon
+
+| # | Item | Effort | Impact |
+|---|------|--------|--------|
+| 1 | **B1** — Fix leakage in `has_refund` | 20 min | Makes the demo honest |
+| 2 | **B2** — Fix `resolution_time_minutes` zero inflation | 15 min | Fixes misleading R²=0.78 |
+| 3 | **M2** — Seed torch for reproducibility | 5 min | Stable demo runs |
+| 4 | **M1** — Add `min_delta` to early stopping | 10 min | Cleaner training output |
+| 5 | **B3** — Fix bar chart scaling | 5 min | Readable importance output |
+| 6 | **F1** — Add sentiment features from support_messages.json | 60 min | Unlocks satisfaction_rating |
+| 7 | **U3** — Build table once in evaluate.py | 5 min | 18s saved per --all run |
+| 8 | **M3** — LR scheduler for noisy regression | 15 min | Smoother total_price training |
+| 9 | **U1** — Warn on unknown predict keys | 10 min | Better UX |
+| 10 | **M4** — Cross-val for sparse targets | 30 min | Reliable satisfaction metrics |
