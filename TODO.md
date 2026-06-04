@@ -203,7 +203,106 @@
 
 ---
 
-Add .gitignore and add appropriate files there
+Add .gitignore and add appropriate files there ✅ DONE
+
+---
+
+## Phase 7 — `--subset` Flag for Per-Product Filtering
+
+> Lets you train and predict on a slice of data — e.g. Hoodies only, Sweatpants only — without touching any other code.
+
+- [ ] Add `--subset` argument to `parse_args()` in `nn/estimator.py` — accepts `"col=value"` string (e.g. `"product_type=Hoodie"`)
+- [ ] Parse the string into `(col, val)` in `main()`, apply as a row filter on the feature table before `prepare_for_target()` is called
+- [ ] Print a log line: `Subset : product_type==Hoodie → 37,412 rows (from 69,956)`
+- [ ] Validate that the column exists and the value is present — exit with helpful error if not
+- [ ] Update `--list_targets` to note that `--subset` can be combined with any target
+
+**Example usage:**
+```bash
+python nn/estimator.py --target damaged_in_transit --epochs 30 --subset "product_type=Hoodie"
+python nn/estimator.py --target has_refund --epochs 30 --subset "product_type=Sweatpants"
+```
+
+**Files to change:** `nn/estimator.py` — `parse_args()` and `main()` only. No changes to `data_builder.py` or `model.py`.
+
+**Effort:** ~20 min
+
+---
+
+## Phase 8 — Sentiment Analysis of Support Tickets
+
+> Load `support_messages.json`, extract per-ticket numeric features from conversation text, and join them into the master feature table. Primary impact: fixes `satisfaction_rating` (currently at naive baseline, R²≈0).
+
+### 8.1 Load and parse `support_messages.json`
+- [ ] Add `_load_support_messages(data_dir)` to `nn/data_builder.py`
+- [ ] Parse JSON — each ticket has a list of turns with `role` (customer / bot / human) and `content` (text)
+- [ ] Compute per-ticket features:
+  - `msg_count` — total number of messages in the thread
+  - `customer_msg_count` — messages sent by the customer
+  - `avg_customer_msg_length` — average character length of customer messages (proxy for frustration/detail)
+  - `n_escalations` — number of bot→human handoffs in the thread
+  - `response_time_first_seconds` — seconds between first customer message and first agent reply
+
+### 8.2 Join into master table
+- [ ] Join to `support_tickets` on `ticket_id`, then inherit the existing `order_id` join in `_build_joined()`
+- [ ] Fill NaN with 0 for orders with no ticket (same pattern as `has_ticket`, `resolution_time_minutes`)
+- [ ] Add new columns to numeric feature set (they are continuous — no change to `CATEGORICAL_COLS`)
+
+### 8.3 Validate
+- [ ] Run `python nn/estimator.py --target satisfaction_rating --epochs 30` — expect RMSE meaningfully below 1.17 (current naive-level baseline)
+- [ ] Confirm `msg_count` and `n_escalations` appear in top feature importances for `satisfaction_rating`
+
+**Files to change:** `nn/data_builder.py` — `_load_support_messages()` (new function) + `_build_joined()` (one extra join).
+
+**Effort:** ~60 min
+
+---
+
+## Phase 9 — LLM Recommendation Layer on `--predict`
+
+> After the neural network makes a prediction, pass the input features + prediction to a Claude API call that returns a plain-English recommendation: *"High refund risk — consider reducing price by 10% or updating the sizing guide for this collection."*
+
+### 9.1 Add `--recommend` flag to CLI
+- [ ] Add `--recommend` boolean flag to `parse_args()` in `nn/estimator.py` — only active when `--predict` and `--load_model` are also set
+- [ ] Validate that `ANTHROPIC_API_KEY` env var is set — print a clear error if not
+
+### 9.2 Build the recommendation prompt
+- [ ] After `load_and_predict()` returns the prediction, construct a structured prompt containing:
+  - Target column name and task type
+  - The input features provided by the user (the JSON row)
+  - The model's prediction and confidence
+  - The top 5 feature importances for this target (from the saved `.pkl` metadata)
+  - The dataset context (Pretty Fly, London streetwear brand, 2-year history)
+- [ ] Send to Claude via `anthropic` Python SDK (model: `claude-haiku-4-5-20251001` — fast and cheap for inference-time calls)
+
+### 9.3 Parse and print the recommendation
+- [ ] Stream or print the LLM response below the prediction output block
+- [ ] Format clearly:
+  ```
+  ============================================================
+    RECOMMENDATION (Claude)
+  ============================================================
+    Risk level  : HIGH (0.81 predicted probability)
+    Top signal  : size_issue strongly predicts this outcome
+
+    Suggested actions:
+    1. Review sizing guide for Hoodies in the Core collection
+    2. Add a size comparison chart to the product page
+    3. Trial a 15% discount on this SKU with a test audience
+       before the next drop
+  ============================================================
+  ```
+
+### 9.4 Validate
+- [ ] Run end-to-end: `python nn/estimator.py --predict '{"product_type": "Hoodie", "size_issue": 1}' --load_model models/damaged_in_transit --recommend`
+- [ ] Confirm recommendation is relevant to the prediction, not generic
+- [ ] Confirm graceful failure if `ANTHROPIC_API_KEY` is missing
+
+**Files to change:**
+- `nn/estimator.py` — `parse_args()`, `load_and_predict()`, new `get_recommendation()` function
+- `requirements_nn.txt` — add `anthropic`
+
+**Effort:** ~90 min
 
 ---
 
@@ -331,15 +430,17 @@ Findings from code inspection + live evaluation runs. Each item has a root cause
 
 ### Priority order for hackathon
 
-| # | Item | Effort | Impact |
-|---|------|--------|--------|
-| 1 | **B1** — Fix leakage in `has_refund` | 20 min | Makes the demo honest |
-| 2 | **B2** — Fix `resolution_time_minutes` zero inflation | 15 min | Fixes misleading R²=0.78 |
-| 3 | **M2** — Seed torch for reproducibility | 5 min | Stable demo runs |
-| 4 | **M1** — Add `min_delta` to early stopping | 10 min | Cleaner training output |
-| 5 | **B3** — Fix bar chart scaling | 5 min | Readable importance output |
-| 6 | **F1** — Add sentiment features from support_messages.json | 60 min | Unlocks satisfaction_rating |
-| 7 | **U3** — Build table once in evaluate.py | 5 min | 18s saved per --all run |
-| 8 | **M3** — LR scheduler for noisy regression | 15 min | Smoother total_price training |
-| 9 | **U1** — Warn on unknown predict keys | 10 min | Better UX |
-| 10 | **M4** — Cross-val for sparse targets | 30 min | Reliable satisfaction metrics |
+| # | Item | Effort | Impact | Status |
+|---|------|--------|--------|--------|
+| 1 | **B1** — Fix leakage in `has_refund` | 20 min | Makes the demo honest | ✅ DONE |
+| 2 | **B2** — Fix `resolution_time_minutes` zero inflation | 15 min | Fixes misleading R²=0.78 | ✅ DONE |
+| 3 | **M2** — Seed torch for reproducibility | 5 min | Stable demo runs | ✅ DONE |
+| 4 | **M1** — Add `min_delta` to early stopping | 10 min | Cleaner training output | ✅ DONE |
+| 5 | **B3** — Fix bar chart scaling | 5 min | Readable importance output | ✅ DONE |
+| 6 | **F1** / **Ph8** — Sentiment features from support_messages.json | 60 min | Unlocks satisfaction_rating | ⬜ TODO |
+| 7 | **U3** — Build table once in evaluate.py | 5 min | 18s saved per --all run | ⬜ TODO |
+| 8 | **M3** — LR scheduler for noisy regression | 15 min | Smoother total_price training | ✅ DONE |
+| 9 | **U1** — Warn on unknown predict keys | 10 min | Better UX | ⬜ TODO |
+| 10 | **M4** — Cross-val for sparse targets | 30 min | Reliable satisfaction metrics | ✅ DONE |
+| 11 | **Ph7** — `--subset` flag for per-product filtering | 20 min | Slice training by product type | ⬜ TODO |
+| 12 | **Ph9** — LLM recommendation layer on `--predict` | 90 min | Actionable business output | ⬜ TODO |
