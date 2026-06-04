@@ -178,6 +178,8 @@ def _engineer_features(df):
     df["accepts_marketing"] = df["accepts_marketing"].astype(int)
     df["has_refund"] = df["has_refund"].astype(int)
     df["has_ticket"] = df["has_ticket"].astype(int)
+    df["damaged_in_transit"] = (df["refund_reason"] == "damaged_in_transit").astype(int)
+    df["size_issue"] = df["refund_reason"].isin(["size_too_small", "size_too_large"]).astype(int)
 
     drop_cols = [
         "order_id", "line_item_id", "variant_id", "product_id", "customer_id",
@@ -204,9 +206,13 @@ CATEGORICAL_COLS = [
 # B1: columns that directly encode the target and must be excluded as features.
 # Without this, models reach AUC=1.0 by reading the answer rather than predicting it.
 LEAKAGE_MAP = {
-    "has_refund": ["financial_status", "refund_reason", "refund_amount"],
-    "has_ticket": ["ticket_category", "resolved_by", "resolution_time_minutes",
-                   "satisfaction_rating", "support_channel"],
+    "has_refund":               ["financial_status", "refund_reason", "refund_amount"],
+    "has_ticket":               ["ticket_category", "resolved_by", "resolution_time_minutes",
+                                 "satisfaction_rating", "support_channel"],
+    "damaged_in_transit":       ["refund_reason", "refund_amount", "has_refund", "financial_status"],
+    "size_issue":               ["refund_reason", "refund_amount", "has_refund", "financial_status"],
+    "landed_cost_per_unit_gbp": ["gross_margin_est"],
+    "variant_price":            ["price", "gross_margin_est"],
 }
 
 # B2: targets where the feature table contains rows that are structurally 0
@@ -214,6 +220,8 @@ LEAKAGE_MAP = {
 # resolution_time_minutes is 0.0 for 97.6% of rows (orders with no ticket).
 FILTER_MAP = {
     "resolution_time_minutes": ("has_ticket", 1),
+    "damaged_in_transit":      ("has_refund", 1),
+    "size_issue":              ("has_refund", 1),
 }
 
 
@@ -329,20 +337,21 @@ def prepare_for_target(df, target_col):
 
     df_clean = df.copy()
 
-    # B1: drop leakage columns that directly encode this target
-    leakage_cols = LEAKAGE_MAP.get(target_col, [])
-    if leakage_cols:
-        drop = [c for c in leakage_cols if c in df_clean.columns]
-        df_clean = df_clean.drop(columns=drop)
-        print(f"Leakage: dropped {drop}")
-
-    # B2: filter to rows where the target is a real measurement (not a structural zero)
+    # B2 FIRST: filter rows — must run before leakage drop because the filter column
+    # may itself be a leakage column (e.g. has_refund for damaged_in_transit).
     if target_col in FILTER_MAP:
         filter_col, filter_val = FILTER_MAP[target_col]
         if filter_col in df_clean.columns:
             before = len(df_clean)
             df_clean = df_clean[df_clean[filter_col] == filter_val].copy()
             print(f"Filter : {filter_col}=={filter_val} → {len(df_clean):,} rows (from {before:,})")
+
+    # B1 SECOND: drop leakage columns that directly encode this target
+    leakage_cols = LEAKAGE_MAP.get(target_col, [])
+    if leakage_cols:
+        drop = [c for c in leakage_cols if c in df_clean.columns]
+        df_clean = df_clean.drop(columns=drop)
+        print(f"Leakage: dropped {drop}")
 
     df_encoded, feature_meta = _encode_and_scale(df_clean, target_col)
     X_cat, X_num, y, task_type, n_classes, target_encoder = get_X_y(df_encoded, feature_meta, target_col)
