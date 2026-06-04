@@ -203,6 +203,10 @@
 
 ---
 
+Add .gitignore and add appropriate files there
+
+---
+
 ## Quick Reference: Key Column Names per File
 
 | File | Target-worthy columns |
