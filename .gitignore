@@ -32,6 +32,9 @@ pretty_fly_master.csv
 .DS_Store
 Thumbs.db
 
+# LibreOffice / editor lock files
+.~lock.*#
+
 # IDE
 .idea/
 .vscode/

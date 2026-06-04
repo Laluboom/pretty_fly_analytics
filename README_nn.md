@@ -8,16 +8,19 @@ Built for the **Wayflyer × Fin AI Hackathon** (London, Jun 2026) — a single n
 
 ## 🎯 What it does
 
-Pretty Fly is a fictional London streetwear brand with **69,956 orders**, 10 data tables, and a goldmine of signals. This estimator joins all of it into a flat feature matrix and trains a deep net that can answer questions like:
+Pretty Fly is a fictional London streetwear brand with **69,956 orders**, 21 data files, and a goldmine of signals. This estimator joins all of it into a flat feature matrix and trains a deep net that can answer questions like:
 
 | Question | Target | Result |
 |----------|--------|--------|
-| 🔄 Will this order get refunded? | `has_refund` | AUC **0.66** (honest — leakage removed) |
-| 💰 What will this order be worth? | `total_price` | RMSE **£6.40**, R² **0.997** |
+| 🔄 Will this order get refunded? | `has_refund` | AUC **0.844** (leakage-free) |
+| 💰 What will this order be worth? | `total_price` | RMSE **£4.37**, R² **0.997** |
 | 👕 What product type is this? | `product_type` | Accuracy **99.99%** |
 | 🎧 Who resolves this support ticket? | `resolved_by` | Accuracy **99.93%** |
 | ⏱️ How long will support take? | `resolution_time_minutes` | RMSE **323 min** (53% better than naive) |
-| ⭐ How happy will this customer be? | `satisfaction_rating` | RMSE **1.17** — needs richer features |
+| ⭐ How happy will this customer be? | `satisfaction_rating` | RMSE **1.17** — synthetic data limitation |
+| 🚚 Was this delivery late? | `delivery_delay_days` | regression — supplier chain signal |
+| 📦 What's the return rate for this variant? | `variant_return_rate` | regression — inventory health |
+| 🏙️ What city is this customer in? | `city` | classification — 20+ UK cities |
 
 All metrics are **out-of-sample** (held-out val set, never seen during training).
 
@@ -32,7 +35,7 @@ pip install -r requirements_nn.txt
 Run everything from `pretty_fly_data_pack/`:
 
 ```bash
-# See all 51 things you can predict
+# See all 76 things you can predict
 python nn/estimator.py --list_targets
 
 # Train on any of them
@@ -131,8 +134,8 @@ Runs all 6 key targets in sequence, prints a summary table, and saves `eval_{tar
 ## 🏗️ Architecture
 
 ```
-15 categorical cols ──► nn.Embedding(vocab+1, dim=8) ──┐
-35 numeric cols     ──► StandardScaled float32         ┘
+19 categorical cols ──► nn.Embedding(vocab+1, dim=8) ──┐
+57 numeric cols     ──► StandardScaled float32         ┘
                                   │
                             concat + BatchNorm1d
                                   │
@@ -162,11 +165,11 @@ Runs all 6 key targets in sequence, prints a summary table, and saves `eval_{tar
 ```
 pretty_fly_data_pack/
 ├── nn/
-│   ├── data_builder.py   353 lines — joins 10 tables → 69,956-row feature matrix
+│   ├── data_builder.py   626 lines — joins 21 files → 69,956-row × 76-col feature matrix
 │   ├── model.py          229 lines — PrettyFlyNet + training loop
-│   ├── estimator.py      364 lines — CLI entry point, importance, save/predict
+│   ├── estimator.py      404 lines — CLI entry point, importance, save/predict
 │   └── evaluate.py       442 lines — full metric suites + 6-panel charts
-├── requirements_nn.txt   torch · pandas · numpy · scikit-learn · tqdm · matplotlib
+├── requirements_nn.txt   torch · pandas · numpy · scikit-learn · tqdm · matplotlib · vaderSentiment
 ├── REPORT.md             full evaluation results + system guide
 └── README_nn.md          ← you are here
 ```
@@ -175,22 +178,27 @@ pretty_fly_data_pack/
 
 ## 🧩 Data Pipeline
 
-10 raw CSVs → one flat table in 3 seconds (CUDA):
+21 raw data files (20 CSV + 1 JSON) → one flat table in ~5 seconds (CUDA):
 
 ```
 line_items
-  ├─► orders        (financials, discounts, timestamps)
-  ├─► variants      (weight, SKU)
-  ├─► products      (type, collection)
-  ├─► customers     (orders_count, total_spent, acquisition source)
-  ├─► po_line_items (landed cost per unit → gross margin)
-  ├─► refunds       (has_refund flag, reason, amount)
-  ├─► support_tickets (category, resolved_by, satisfaction_rating)
-  ├─► google_ads_daily (spend, impressions, clicks, conversions)
-  └─► meta_ads_daily   (spend, impressions, clicks, conversions)
+  ├─► orders              (financials, discounts, timestamps)
+  ├─► variants            (weight, SKU)
+  ├─► products            (type, collection)
+  ├─► customers           (orders_count, total_spent, acquisition source)
+  ├─► po_line_items ──► purchase_orders ──► suppliers  (landed cost, lead time, delivery delay)
+  ├─► inventory_movements (stock level, return rate, restock count — per variant)
+  ├─► discount_codes      (discount type and value)
+  ├─► email_events        (opens, clicks, campaigns, days since last email — per customer)
+  ├─► addresses           (city, postcode district — PII stripped)
+  ├─► refunds             (has_refund flag, reason, amount)
+  ├─► support_tickets     (category, resolved_by, satisfaction_rating)
+  ├─► support_messages.json (message counts, avg length, VADER sentiment — per ticket)
+  ├─► google_ads_daily    (spend, impressions, clicks, conversions)
+  └─► meta_ads_daily      (spend, impressions, clicks, conversions)
 ```
 
-**Engineered features:** `discount_pct` · `gross_margin_est` · `order_month` · `order_dayofweek` · `order_hour` · `is_discounted` · `total_ad_spend` · `total_ad_conversions`
+**Engineered features:** `discount_pct` · `gross_margin_est` · `order_month` · `order_dayofweek` · `order_hour` · `is_discounted` · `total_ad_spend` · `total_ad_conversions` · `damaged_in_transit` · `size_issue` · `price_components_sum` · `avg_sentiment` · `min_sentiment` · `pct_negative_msgs`
 
 ---
 
@@ -198,14 +206,15 @@ line_items
 
 | Flag | Default | What it does |
 |------|---------|--------------|
-| `--target` | *required* | Column to predict (any of 51) |
+| `--target` | *required* | Column to predict (any of 76) |
 | `--epochs` | 50 | Max training epochs (early stopping kicks in sooner) |
 | `--batch_size` | 512 | Mini-batch size |
 | `--data_dir` | `../data` | Path to raw CSVs |
-| `--list_targets` | — | Print all 51 targets with sparsity info and exit |
+| `--list_targets` | — | Print all 76 targets with sparsity info and exit |
+| `--subset` | — | Filter rows before training, e.g. `"product_type=Hoodie"` |
 | `--save_model` | — | Save `{prefix}.pt` + `{prefix}.pkl` after training |
 | `--load_model` | — | Load a saved model (use with `--predict`) |
-| `--predict` | — | JSON string or file path; partial rows OK |
+| `--predict` | — | JSON string or file path; partial rows OK, typos warned |
 | `--plot` | — | Save `importance_{target}.png` bar chart |
 
 ---

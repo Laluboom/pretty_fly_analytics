@@ -31,6 +31,7 @@ def parse_args():
     parser.add_argument("--predict",     type=str,   default=None,  help="JSON string or path to JSON file of feature values; requires --load_model")
     parser.add_argument("--load_model",  type=str,   default=None,  help="Path prefix of saved model to load for --predict")
     parser.add_argument("--plot",        action="store_true",        help="Save feature importance bar chart as importance_{target}.png")
+    parser.add_argument("--subset",      type=str,   default=None,  help="Filter rows before training, e.g. \"product_type=Hoodie\"")
     return parser.parse_args()
 
 
@@ -209,6 +210,12 @@ def load_and_predict(prefix, raw_input, data_dir=None):
     else:
         row = json.loads(raw_input)
 
+    # Warn on unknown keys before auto-computation adds its own keys to row
+    all_feature_cols = set(feature_meta["cat_cols"]) | set(feature_meta["num_cols"])
+    unknown_keys = set(row.keys()) - all_feature_cols
+    if unknown_keys:
+        print(f"Warning: unknown input keys (ignored): {sorted(unknown_keys)}")
+
     # Auto-compute engineered features from raw inputs if components are present
     def _get(k, default=0.0):
         return float(row.get(k, default))
@@ -239,6 +246,9 @@ def load_and_predict(prefix, raw_input, data_dir=None):
             x_cat.append(le.transform([val])[0])
         else:
             x_cat.append(0)  # fallback to first class for unseen values
+
+    # Sentiment features (avg_sentiment, min_sentiment, pct_negative_msgs) default to 0 here,
+    # meaning "no support thread = neutral customer" — correct behaviour for inference on new orders.
 
     # Scale numerics — build a single-row DataFrame so sklearn doesn't warn about feature names
     import pandas as pd
@@ -336,6 +346,24 @@ def main():
         print(f"\nError: '{args.target}' not found in feature table.")
         print("Run with --list_targets to see valid options.")
         sys.exit(1)
+
+    # --subset: filter rows before training
+    if args.subset:
+        if "=" not in args.subset:
+            print(f"Error: --subset must be in the form 'col=value', got: {args.subset!r}")
+            sys.exit(1)
+        sub_col, sub_val = args.subset.split("=", 1)
+        if sub_col not in df.columns:
+            print(f"Error: --subset column '{sub_col}' not found. Run --list_targets to see valid columns.")
+            sys.exit(1)
+        matches = df[sub_col].astype(str) == sub_val
+        if not matches.any():
+            print(f"Error: --subset value '{sub_val}' not found in column '{sub_col}'.")
+            print(f"  Available values: {sorted(df[sub_col].astype(str).unique())}")
+            sys.exit(1)
+        before = len(df)
+        df = df[matches].copy()
+        print(f"Subset : {sub_col}=={sub_val} → {len(df):,} rows (from {before:,})")
 
     # Prepare data
     X_cat, X_num, y, task_type, n_classes, feature_meta, target_encoder = prepare_for_target(

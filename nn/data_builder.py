@@ -207,11 +207,14 @@ def _load_address_features():
     return df[["customer_id", "city", "postcode_district"]]
 
 
-def _load_support_message_features():
-    """Parse support_messages.json → per-ticket conversation features → join via order_id."""
+def _parse_support_messages():
+    """Read support_messages.json once; returns the raw list. Call this once and pass to loaders."""
     with open(_path("support_messages.json")) as f:
-        raw = json.load(f)
+        return json.load(f)
 
+
+def _load_support_message_features(raw):
+    """Per-ticket conversation features from pre-parsed message list → join via order_id."""
     # Build ticket_id → order_id map from support_tickets
     tickets = pd.read_csv(_path("support_tickets.csv"))[
         ["ticket_id", "related_order_id"]
@@ -269,6 +272,37 @@ def _load_support_message_features():
     return result.drop(columns=["ticket_id"])
 
 
+def _load_support_sentiment_features(raw):
+    """VADER sentiment scored on customer messages only → per-order features via ticket_id."""
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+    sia = SentimentIntensityAnalyzer()
+
+    tickets = pd.read_csv(_path("support_tickets.csv"))[
+        ["ticket_id", "related_order_id"]
+    ].rename(columns={"related_order_id": "order_id"})
+
+    rows = []
+    for ticket in raw:
+        tid = ticket["ticket_id"]
+        customer_msgs = [
+            m for m in ticket.get("messages", []) if m["sender"] == "customer"
+        ]
+        if not customer_msgs:
+            continue
+
+        scores = [sia.polarity_scores(m["body"])["compound"] for m in customer_msgs]
+        rows.append({
+            "ticket_id":          tid,
+            "avg_sentiment":      round(float(np.mean(scores)), 4),
+            "min_sentiment":      round(float(np.min(scores)), 4),
+            "pct_negative_msgs":  round(sum(s < -0.05 for s in scores) / len(scores), 4),
+        })
+
+    sentiment = pd.DataFrame(rows)
+    result = sentiment.merge(tickets, on="ticket_id", how="left").dropna(subset=["order_id"])
+    return result.drop(columns=["ticket_id"])
+
+
 # ---------------------------------------------------------------------------
 # 1.2  Join chain
 # ---------------------------------------------------------------------------
@@ -279,6 +313,7 @@ def _build_joined(
     google_ads, meta_ads,
     discount_codes, supplier_features, inventory_features,
     email_features, address_features, support_message_features,
+    sentiment_features,
 ):
     df = line_items.merge(orders, on="order_id", how="left")
     df = df.merge(variants, on="variant_id", how="left")
@@ -338,6 +373,12 @@ def _build_joined(
                 "n_escalations", "response_time_first_seconds"]:
         df[col] = df[col].fillna(0)
 
+    # --- New: VADER sentiment features (customer message tone per ticket) ---
+    df = df.merge(sentiment_features, on="order_id", how="left")
+    # Orders with no ticket → neutral sentiment (0 = no signal either way)
+    for col in ["avg_sentiment", "min_sentiment", "pct_negative_msgs"]:
+        df[col] = df[col].fillna(0)
+
     # --- Original ads ---
     df["order_date"] = df["created_at"].dt.normalize()
     df = df.merge(
@@ -365,7 +406,7 @@ def _engineer_features(df):
     df["discount_pct"] = (df["total_discounts"] / df["subtotal"].replace(0, np.nan)).clip(0, 1).fillna(0)
     df["gross_margin_est"] = (
         (df["price"] - df["landed_cost_per_unit_gbp"]) / df["price"].replace(0, np.nan)
-    ).fillna(df["price"].pipe(lambda s: (s - s.median()) / s.replace(0, np.nan)).fillna(0))
+    ).fillna(0)
     df["order_month"]      = df["created_at"].dt.month
     df["order_dayofweek"]  = df["created_at"].dt.dayofweek
     df["order_hour"]       = df["created_at"].dt.hour
@@ -429,6 +470,9 @@ FILTER_MAP = {
     "avg_customer_msg_length":      ("has_ticket", 1),
     "n_escalations":                ("has_ticket", 1),
     "response_time_first_seconds":  ("has_ticket", 1),
+    "avg_sentiment":                ("has_ticket", 1),
+    "min_sentiment":                ("has_ticket", 1),
+    "pct_negative_msgs":            ("has_ticket", 1),
 }
 
 
@@ -529,7 +573,9 @@ def build_feature_table(data_dir=None):
     inventory_features      = _load_inventory_features()
     email_features          = _load_email_features()
     address_features        = _load_address_features()
-    support_message_features = _load_support_message_features()
+    raw_messages             = _parse_support_messages()
+    support_message_features = _load_support_message_features(raw_messages)
+    sentiment_features       = _load_support_sentiment_features(raw_messages)
 
     print("Joining tables...")
     df = _build_joined(
@@ -538,6 +584,7 @@ def build_feature_table(data_dir=None):
         google_ads, meta_ads,
         discount_codes, supplier_features, inventory_features,
         email_features, address_features, support_message_features,
+        sentiment_features,
     )
 
     print("Engineering features...")
