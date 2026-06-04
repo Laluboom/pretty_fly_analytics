@@ -13,7 +13,7 @@ def _path(filename):
 
 
 # ---------------------------------------------------------------------------
-# 1.1  Raw table loaders
+# 1.1  Raw table loaders — original 10 tables
 # ---------------------------------------------------------------------------
 
 def _load_orders():
@@ -70,7 +70,6 @@ def _load_refunds():
         columns={"amount": "refund_amount", "reason": "refund_reason"}
     )
     df["has_refund"] = True
-    # keep first refund per order (edge case: multiple partial refunds)
     return df.drop_duplicates("order_id")
 
 
@@ -116,6 +115,161 @@ def _load_meta_ads():
 
 
 # ---------------------------------------------------------------------------
+# 1.1b  New table loaders — Phase 8 data integration
+# ---------------------------------------------------------------------------
+
+def _load_discount_codes():
+    """8-row lookup: discount code → type + value. Join on orders.discount_code."""
+    df = pd.read_csv(_path("discount_codes.csv"))[["code", "type", "value"]]
+    return df.rename(columns={"type": "discount_type", "value": "discount_value"})
+
+
+def _load_supplier_features():
+    """Chain: po_line_items → purchase_orders → suppliers → per-variant supplier features."""
+    po_li = pd.read_csv(_path("po_line_items.csv"))[["po_id", "variant_id"]]
+    pos = pd.read_csv(_path("purchase_orders.csv"),
+                      parse_dates=["expected_delivery", "actual_delivery"])
+    pos["delivery_delay_days"] = (
+        pos["actual_delivery"] - pos["expected_delivery"]
+    ).dt.days.fillna(0).astype(int)
+    pos = pos[["po_id", "supplier_id", "delivery_delay_days"]]
+
+    suppliers = pd.read_csv(_path("suppliers.csv"))[
+        ["supplier_id", "country", "lead_time_days"]
+    ].rename(columns={"country": "supplier_country"})
+
+    merged = po_li.merge(pos, on="po_id", how="left")
+    merged = merged.merge(suppliers, on="supplier_id", how="left")
+    # Multiple POs per variant — keep most recent (po_ids are sequential)
+    merged = merged.sort_values("po_id").drop_duplicates("variant_id", keep="last")
+    return merged[["variant_id", "supplier_country", "lead_time_days", "delivery_delay_days"]]
+
+
+def _load_inventory_features():
+    """Aggregate 76k inventory movements to per-variant stock features."""
+    df = pd.read_csv(_path("inventory_movements.csv"))
+
+    # Latest stock balance per variant
+    latest = (
+        df.sort_values("date")
+        .groupby("variant_id", as_index=False)
+        .last()[["variant_id", "running_balance"]]
+        .rename(columns={"running_balance": "variant_latest_stock"})
+    )
+
+    # Return rate: returns / sales per variant
+    sales   = df[df["type"] == "sale"].groupby("variant_id").size().rename("_sales")
+    returns = df[df["type"] == "return"].groupby("variant_id").size().rename("_returns")
+    restocks = df[df["type"] == "po_receipt"].groupby("variant_id").size().rename("variant_restock_count")
+
+    rates = pd.concat([sales, returns, restocks], axis=1).fillna(0).reset_index()
+    rates["variant_return_rate"] = (
+        rates["_returns"] / rates["_sales"].replace(0, np.nan)
+    ).fillna(0).round(4)
+    rates = rates[["variant_id", "variant_return_rate", "variant_restock_count"]]
+
+    return latest.merge(rates, on="variant_id", how="left").fillna(0)
+
+
+def _load_email_features():
+    """Aggregate per-customer email engagement (excludes auto-attributed 'converted' events)."""
+    df = pd.read_csv(_path("email_events.csv"), parse_dates=["timestamp"])
+    # 'converted' events are auto-attributed post-purchase, not genuine engagement
+    df = df[df["event_type"] != "converted"].copy()
+
+    opens    = df[df["event_type"] == "opened"].groupby("customer_id").size().rename("email_open_count")
+    clicks   = df[df["event_type"] == "clicked"].groupby("customer_id").size().rename("email_click_count")
+    campaigns = df.groupby("customer_id")["campaign_id"].nunique().rename("email_campaign_count")
+
+    REFERENCE_DATE = pd.Timestamp("2026-06-04")
+    days_since = (
+        (REFERENCE_DATE - df.groupby("customer_id")["timestamp"].max())
+        .dt.days
+        .rename("days_since_last_email")
+    )
+
+    result = pd.concat([opens, clicks, campaigns, days_since], axis=1).fillna(0).reset_index()
+    result = result.astype({
+        "email_open_count": int,
+        "email_click_count": int,
+        "email_campaign_count": int,
+        "days_since_last_email": int,
+    })
+    return result
+
+
+def _load_address_features():
+    """Extract non-PII geography: city + postcode district (e.g. 'IG1' from 'IG1 1AT')."""
+    df = pd.read_csv(_path("addresses.csv"))[["customer_id", "city", "postcode"]]
+    df["postcode_district"] = df["postcode"].str.split(" ").str[0].fillna("unknown")
+    df["city"] = df["city"].fillna("unknown")
+    # Drop province (90% null), country (all GB), full postcode, PII already excluded by column selection
+    return df[["customer_id", "city", "postcode_district"]]
+
+
+def _load_support_message_features():
+    """Parse support_messages.json → per-ticket conversation features → join via order_id."""
+    with open(_path("support_messages.json")) as f:
+        raw = json.load(f)
+
+    # Build ticket_id → order_id map from support_tickets
+    tickets = pd.read_csv(_path("support_tickets.csv"))[
+        ["ticket_id", "related_order_id"]
+    ].rename(columns={"related_order_id": "order_id"})
+
+    rows = []
+    for ticket in raw:
+        tid = ticket["ticket_id"]
+        msgs = ticket.get("messages", [])
+        if not msgs:
+            continue
+
+        customer_msgs = [m for m in msgs if m["sender"] == "customer"]
+        agent_msgs    = [m for m in msgs if m["sender"] in ("bot", "human")]
+
+        msg_count            = len(msgs)
+        customer_msg_count   = len(customer_msgs)
+        avg_customer_msg_len = (
+            np.mean([len(m["body"]) for m in customer_msgs]) if customer_msgs else 0
+        )
+
+        # Escalation = bot message immediately followed by a human message
+        senders = [m["sender"] for m in msgs]
+        n_escalations = sum(
+            1 for i in range(len(senders) - 1)
+            if senders[i] == "bot" and senders[i + 1] == "human"
+        )
+
+        # Time from first customer message to first agent reply (seconds)
+        try:
+            first_customer_ts = pd.Timestamp(next(
+                m["timestamp"] for m in msgs if m["sender"] == "customer"
+            ))
+            first_agent_ts = pd.Timestamp(next(
+                m["timestamp"] for m in msgs if m["sender"] in ("bot", "human")
+            ))
+            response_time_first_seconds = max(
+                0, (first_agent_ts - first_customer_ts).total_seconds()
+            )
+        except StopIteration:
+            response_time_first_seconds = 0
+
+        rows.append({
+            "ticket_id": tid,
+            "msg_count": msg_count,
+            "customer_msg_count": customer_msg_count,
+            "avg_customer_msg_length": round(avg_customer_msg_len, 1),
+            "n_escalations": n_escalations,
+            "response_time_first_seconds": response_time_first_seconds,
+        })
+
+    msg_features = pd.DataFrame(rows)
+    # Join ticket_id → order_id
+    result = msg_features.merge(tickets, on="ticket_id", how="left").dropna(subset=["order_id"])
+    return result.drop(columns=["ticket_id"])
+
+
+# ---------------------------------------------------------------------------
 # 1.2  Join chain
 # ---------------------------------------------------------------------------
 
@@ -123,25 +277,68 @@ def _build_joined(
     line_items, orders, variants, products,
     customers, po_line_items, refunds, support_tickets,
     google_ads, meta_ads,
+    discount_codes, supplier_features, inventory_features,
+    email_features, address_features, support_message_features,
 ):
     df = line_items.merge(orders, on="order_id", how="left")
     df = df.merge(variants, on="variant_id", how="left")
     df = df.merge(products, on="product_id", how="left")
     df = df.merge(customers, on="customer_id", how="left")
     df = df.merge(po_line_items, on="variant_id", how="left")
+
+    # --- New: supplier chain (joins via variant_id, same as po_line_items) ---
+    df = df.merge(supplier_features, on="variant_id", how="left")
+    df["supplier_country"] = df["supplier_country"].fillna("unknown")
+    df["lead_time_days"] = df["lead_time_days"].fillna(df["lead_time_days"].median())
+    df["delivery_delay_days"] = df["delivery_delay_days"].fillna(0)
+
+    # --- New: inventory features (per variant) ---
+    df = df.merge(inventory_features, on="variant_id", how="left")
+    for col in ["variant_latest_stock", "variant_return_rate", "variant_restock_count"]:
+        df[col] = df[col].fillna(0)
+
+    # --- New: discount code details (join on discount_code from orders) ---
+    df = df.merge(
+        discount_codes, left_on="discount_code", right_on="code", how="left"
+    ).drop(columns=["code"], errors="ignore")
+    df["discount_type"] = df["discount_type"].fillna("none")
+    df["discount_value"] = df["discount_value"].fillna(0)
+
+    # --- New: email engagement (per customer) ---
+    df = df.merge(email_features, on="customer_id", how="left")
+    df["email_open_count"]       = df["email_open_count"].fillna(0).astype(int)
+    df["email_click_count"]      = df["email_click_count"].fillna(0).astype(int)
+    df["email_campaign_count"]   = df["email_campaign_count"].fillna(0).astype(int)
+    # Customers with no email history get sentinel 999 (not 0 — 0 would mean "opened 0 times today")
+    df["days_since_last_email"]  = df["days_since_last_email"].fillna(999).astype(int)
+
+    # --- New: address geography (per customer) ---
+    df = df.merge(address_features, on="customer_id", how="left")
+    df["city"]               = df["city"].fillna("unknown")
+    df["postcode_district"]  = df["postcode_district"].fillna("unknown")
+
+    # --- Original refunds ---
     df = df.merge(refunds, on="order_id", how="left")
-    df["has_refund"] = df["has_refund"].notna() & df["has_refund"].eq(True)
+    df["has_refund"]    = df["has_refund"].notna() & df["has_refund"].eq(True)
     df["refund_reason"] = df["refund_reason"].fillna("none")
     df["refund_amount"] = df["refund_amount"].fillna(0.0)
-    df = df.merge(support_tickets, on="order_id", how="left")
-    df["has_ticket"] = df["has_ticket"].notna() & df["has_ticket"].eq(True)
-    df["ticket_category"] = df["ticket_category"].fillna("none")
-    df["resolved_by"] = df["resolved_by"].fillna("none")
-    df["resolution_time_minutes"] = df["resolution_time_minutes"].fillna(0.0)
-    df["satisfaction_rating"] = df["satisfaction_rating"]  # keep NaN — sparse target
-    df["support_channel"] = df["support_channel"].fillna("none")
 
-    # ad join key: utm_campaign + order date
+    # --- Original support tickets ---
+    df = df.merge(support_tickets, on="order_id", how="left")
+    df["has_ticket"]               = df["has_ticket"].notna() & df["has_ticket"].eq(True)
+    df["ticket_category"]          = df["ticket_category"].fillna("none")
+    df["resolved_by"]              = df["resolved_by"].fillna("none")
+    df["resolution_time_minutes"]  = df["resolution_time_minutes"].fillna(0.0)
+    df["satisfaction_rating"]      = df["satisfaction_rating"]  # keep NaN — sparse target
+    df["support_channel"]          = df["support_channel"].fillna("none")
+
+    # --- New: support message features (per order via ticket) ---
+    df = df.merge(support_message_features, on="order_id", how="left")
+    for col in ["msg_count", "customer_msg_count", "avg_customer_msg_length",
+                "n_escalations", "response_time_first_seconds"]:
+        df[col] = df[col].fillna(0)
+
+    # --- Original ads ---
     df["order_date"] = df["created_at"].dt.normalize()
     df = df.merge(
         google_ads, left_on=["utm_campaign", "order_date"],
@@ -169,21 +366,21 @@ def _engineer_features(df):
     df["gross_margin_est"] = (
         (df["price"] - df["landed_cost_per_unit_gbp"]) / df["price"].replace(0, np.nan)
     ).fillna(df["price"].pipe(lambda s: (s - s.median()) / s.replace(0, np.nan)).fillna(0))
-    df["order_month"] = df["created_at"].dt.month
-    df["order_dayofweek"] = df["created_at"].dt.dayofweek
-    df["order_hour"] = df["created_at"].dt.hour
-    df["is_discounted"] = df["discount_code"].notna().astype(int)
-    df["total_ad_spend"] = df["google_spend"] + df["meta_spend"]
+    df["order_month"]      = df["created_at"].dt.month
+    df["order_dayofweek"]  = df["created_at"].dt.dayofweek
+    df["order_hour"]       = df["created_at"].dt.hour
+    df["is_discounted"]    = df["discount_code"].notna().astype(int)
+    df["total_ad_spend"]   = df["google_spend"] + df["meta_spend"]
     df["total_ad_conversions"] = df["google_conversions"] + df["meta_conversions"]
-    # Pre-computed sum so total_price model sees the exact algebraic identity
+    # Pre-computed sum: gives total_price model the algebraic identity directly
     df["price_components_sum"] = (
         df["subtotal"] + df["total_shipping"] + df["total_tax"] - df["total_discounts"]
     )
-    df["accepts_marketing"] = df["accepts_marketing"].astype(int)
-    df["has_refund"] = df["has_refund"].astype(int)
-    df["has_ticket"] = df["has_ticket"].astype(int)
-    df["damaged_in_transit"] = (df["refund_reason"] == "damaged_in_transit").astype(int)
-    df["size_issue"] = df["refund_reason"].isin(["size_too_small", "size_too_large"]).astype(int)
+    df["accepts_marketing"]     = df["accepts_marketing"].astype(int)
+    df["has_refund"]            = df["has_refund"].astype(int)
+    df["has_ticket"]            = df["has_ticket"].astype(int)
+    df["damaged_in_transit"]    = (df["refund_reason"] == "damaged_in_transit").astype(int)
+    df["size_issue"]            = df["refund_reason"].isin(["size_too_small", "size_too_large"]).astype(int)
 
     drop_cols = [
         "order_id", "line_item_id", "variant_id", "product_id", "customer_id",
@@ -205,27 +402,33 @@ CATEGORICAL_COLS = [
     "acquisition_source", "default_country", "gender_segment_affinity",
     "refund_reason", "ticket_category", "resolved_by", "support_channel",
     "financial_status",
+    # Phase 8 additions
+    "discount_type", "supplier_country", "city", "postcode_district",
 ]
 
-# B1: columns that directly encode the target and must be excluded as features.
-# Without this, models reach AUC=1.0 by reading the answer rather than predicting it.
+# B1: columns that directly encode the target — drop before training to prevent leakage.
 LEAKAGE_MAP = {
     "has_refund":               ["financial_status", "refund_reason", "refund_amount"],
     "has_ticket":               ["ticket_category", "resolved_by", "resolution_time_minutes",
-                                 "satisfaction_rating", "support_channel"],
+                                 "satisfaction_rating", "support_channel",
+                                 "msg_count", "customer_msg_count", "avg_customer_msg_length",
+                                 "n_escalations", "response_time_first_seconds"],
+    # satisfaction_rating: message features are the SIGNAL we want — do NOT drop them
     "damaged_in_transit":       ["refund_reason", "refund_amount", "has_refund", "financial_status"],
     "size_issue":               ["refund_reason", "refund_amount", "has_refund", "financial_status"],
     "landed_cost_per_unit_gbp": ["gross_margin_est"],
     "variant_price":            ["price", "gross_margin_est"],
 }
 
-# B2: targets where the feature table contains rows that are structurally 0
-# (not a real measurement) — filter to meaningful rows only before training.
-# resolution_time_minutes is 0.0 for 97.6% of rows (orders with no ticket).
+# B2: targets where most rows are structural zeros — filter to meaningful rows before training.
 FILTER_MAP = {
-    "resolution_time_minutes": ("has_ticket", 1),
-    "damaged_in_transit":      ("has_refund", 1),
-    "size_issue":              ("has_refund", 1),
+    "resolution_time_minutes":      ("has_ticket", 1),
+    "damaged_in_transit":           ("has_refund", 1),
+    "size_issue":                   ("has_refund", 1),
+    "msg_count":                    ("has_ticket", 1),
+    "avg_customer_msg_length":      ("has_ticket", 1),
+    "n_escalations":                ("has_ticket", 1),
+    "response_time_first_seconds":  ("has_ticket", 1),
 }
 
 
@@ -309,22 +512,32 @@ def build_feature_table(data_dir=None):
         DATA_DIR = data_dir
 
     print("Loading tables...")
-    orders = _load_orders()
-    line_items = _load_line_items()
-    variants = _load_variants()
-    products = _load_products()
-    customers = _load_customers()
-    po_line_items = _load_po_line_items()
-    refunds = _load_refunds()
+    orders          = _load_orders()
+    line_items      = _load_line_items()
+    variants        = _load_variants()
+    products        = _load_products()
+    customers       = _load_customers()
+    po_line_items   = _load_po_line_items()
+    refunds         = _load_refunds()
     support_tickets = _load_support_tickets()
-    google_ads = _load_google_ads()
-    meta_ads = _load_meta_ads()
+    google_ads      = _load_google_ads()
+    meta_ads        = _load_meta_ads()
+
+    print("Loading new data sources...")
+    discount_codes          = _load_discount_codes()
+    supplier_features       = _load_supplier_features()
+    inventory_features      = _load_inventory_features()
+    email_features          = _load_email_features()
+    address_features        = _load_address_features()
+    support_message_features = _load_support_message_features()
 
     print("Joining tables...")
     df = _build_joined(
         line_items, orders, variants, products,
         customers, po_line_items, refunds, support_tickets,
         google_ads, meta_ads,
+        discount_codes, supplier_features, inventory_features,
+        email_features, address_features, support_message_features,
     )
 
     print("Engineering features...")

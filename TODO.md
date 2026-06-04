@@ -229,32 +229,136 @@ python nn/estimator.py --target has_refund --epochs 30 --subset "product_type=Sw
 
 ---
 
-## Phase 8 — Sentiment Analysis of Support Tickets
+## Phase 8 — Full Data Integration (all 21 files)
 
-> Load `support_messages.json`, extract per-ticket numeric features from conversation text, and join them into the master feature table. Primary impact: fixes `satisfaction_rating` (currently at naive baseline, R²≈0).
+> Load all previously unused data files and join them into the master feature matrix. Adds ~15 new features covering supplier chain, inventory health, email engagement, customer geography, discount details, and support message sentiment. Primary impact: fixes `satisfaction_rating`, unlocks supplier/inventory predictions.
 
-### 8.1 Load and parse `support_messages.json`
-- [ ] Add `_load_support_messages(data_dir)` to `nn/data_builder.py`
-- [ ] Parse JSON — each ticket has a list of turns with `role` (customer / bot / human) and `content` (text)
-- [ ] Compute per-ticket features:
-  - `msg_count` — total number of messages in the thread
-  - `customer_msg_count` — messages sent by the customer
-  - `avg_customer_msg_length` — average character length of customer messages (proxy for frustration/detail)
-  - `n_escalations` — number of bot→human handoffs in the thread
-  - `response_time_first_seconds` — seconds between first customer message and first agent reply
+**Files currently unused:** `discount_codes.csv`, `purchase_orders.csv`, `suppliers.csv`, `inventory_movements.csv`, `email_events.csv`, `addresses.csv`, `support_messages.json`
 
-### 8.2 Join into master table
-- [ ] Join to `support_tickets` on `ticket_id`, then inherit the existing `order_id` join in `_build_joined()`
-- [ ] Fill NaN with 0 for orders with no ticket (same pattern as `has_ticket`, `resolution_time_minutes`)
-- [ ] Add new columns to numeric feature set (they are continuous — no change to `CATEGORICAL_COLS`)
+**Files skipped (no useful per-order join):** `bank_transactions.csv` (no order key), `email_campaigns.csv` (aggregate only — 6 rows), `product_collections.csv` + `collections.csv` (collection already captured via `products.csv`)
 
-### 8.3 Validate
-- [ ] Run `python nn/estimator.py --target satisfaction_rating --epochs 30` — expect RMSE meaningfully below 1.17 (current naive-level baseline)
-- [ ] Confirm `msg_count` and `n_escalations` appear in top feature importances for `satisfaction_rating`
+---
 
-**Files to change:** `nn/data_builder.py` — `_load_support_messages()` (new function) + `_build_joined()` (one extra join).
+### 8.1 Discount codes — join on `orders.discount_code`
 
-**Effort:** ~60 min
+- [ ] Add `_load_discount_codes(data_dir)` — load 8-row lookup table
+- [ ] Join to orders on `orders.discount_code == discount_codes.code` (LEFT JOIN — 85% of orders have no code)
+- [ ] New features:
+  - `discount_type` — "percentage" / "fixed_amount" / "none" → **categorical**
+  - `discount_value` — numeric value of the discount (0 if no code) → **numeric**
+- [ ] Fill: `discount_type = "none"`, `discount_value = 0` for orders without a code
+- [ ] Drop: `code`, `usage_count`, `starts_at`, `ends_at` (not per-order signals)
+- [ ] Add `"discount_type"` to `CATEGORICAL_COLS`
+
+**Leakage check:** Neither column encodes any current target. Clean.
+
+---
+
+### 8.2 Suppliers + purchase orders — join chain via `po_line_items`
+
+- [ ] Add `_load_supplier_features(data_dir)`:
+  - Load `purchase_orders.csv` (21 rows) + `suppliers.csv` (5 rows)
+  - Join purchase_orders → suppliers on `supplier_id`
+  - Parse `expected_delivery` and `actual_delivery` as dates
+  - Compute `delivery_delay_days = (actual_delivery - expected_delivery).dt.days` (negative = early, positive = late)
+  - Join to `po_line_items` on `po_id` → gives one supplier row per variant (po_line_items already deduped per variant_id in existing pipeline)
+- [ ] New features per variant:
+  - `supplier_country` — Portugal / Italy / Turkey / etc. → **categorical**
+  - `lead_time_days` — 45–90 days (supplier speed proxy) → **numeric**
+  - `delivery_delay_days` — actual vs promised delivery → **numeric**
+- [ ] Fill: `supplier_country = "unknown"`, `lead_time_days = median`, `delivery_delay_days = 0`
+- [ ] Drop: `po_id`, `supplier_id`, `supplier_name`, all date columns, `status` (all "received"), cost columns (already have landed_cost_per_unit_gbp)
+- [ ] Add `"supplier_country"` to `CATEGORICAL_COLS`
+
+**Leakage check:** Lead time and delivery delay don't encode any target. Clean.
+
+---
+
+### 8.3 Inventory movements — aggregate per variant
+
+- [ ] Add `_load_inventory_features(data_dir)`:
+  - Load `inventory_movements.csv` (76,444 rows — 3 movement types: `sale`, `return`, `po_receipt`)
+  - Aggregate per `variant_id`:
+    - `variant_latest_stock` = `running_balance` from the most recent movement (any type)
+    - `variant_return_rate` = return movements / sale movements (0 if no sales)
+    - `variant_restock_count` = count of `po_receipt` movements (how many times restocked)
+  - Join to feature matrix on `variant_id`
+- [ ] Fill: 0 for variants with no movements (should not occur — all 645 variants have movements)
+- [ ] Drop: `movement_id`, `date`, `quantity_delta`, `reference_id`, `type` (used only for aggregation)
+- [ ] New features → all **numeric** (no CATEGORICAL_COLS change needed)
+
+**Pre-computation note:** `variant_return_rate` = returns / sales — compute as a ratio, not raw counts, to avoid scale issues.
+**Leakage check:** Stock levels don't encode any current target. `variant_return_rate` could correlate with `has_refund` / `size_issue` but is a legitimate feature (it's per-variant history, not per-order).
+
+---
+
+### 8.4 Email engagement — aggregate per customer
+
+- [ ] Add `_load_email_features(data_dir)`:
+  - Load `email_events.csv` (11,368 rows — event types: `sent`, `opened`, `clicked`, `converted`)
+  - **Exclude `converted` events** — 65% of events are "converted", auto-attributed, not genuine engagement
+  - Aggregate per `customer_id` over genuine engagement events (sent/opened/clicked only):
+    - `email_open_count` — total opens per customer
+    - `email_click_count` — total clicks per customer
+    - `email_campaign_count` — distinct campaigns customer appeared in
+    - `days_since_last_email` — days between most recent email event and 2026-06-04 (reference date). Use large sentinel (999) for customers with no emails.
+  - Join to feature matrix on `customer_id`
+- [ ] Fill: `email_open_count = 0`, `email_click_count = 0`, `email_campaign_count = 0`, `days_since_last_email = 999` for customers with no email history (84% of customers)
+- [ ] Drop: `event_id`, `campaign_id`, `timestamp`, `event_type` (used only for aggregation)
+- [ ] New features → all **numeric**
+
+**Zero-inflation note:** 84% of customers have no email history — filling with 0 / 999 is correct. Do NOT filter rows. These customers are a real cohort (non-email-engaged).
+**Leakage check:** Email engagement does not encode any target. Clean.
+
+---
+
+### 8.5 Customer addresses — extract geography only
+
+- [ ] Add `_load_address_features(data_dir)`:
+  - Load `addresses.csv` (22,440 rows — one per customer)
+  - Extract `postcode_district` = first segment of UK postcode (e.g., "IG1" from "IG1 1AT")
+  - Keep `city` as-is
+  - **Drop all PII**: `first_name`, `last_name`, `address1`, `address2` (100% null anyway), `province` (90% null), `country` (all GB — zero variance)
+  - Join to feature matrix on `customer_id`
+- [ ] Fill: `postcode_district = "unknown"`, `city = "unknown"` for customers with no address
+- [ ] Add `"postcode_district"` and `"city"` to `CATEGORICAL_COLS`
+
+**PII note:** Only postcode_district (area-level, not property-level) and city are used. Full postcode, full address, and names are dropped before any ML processing.
+
+---
+
+### 8.6 Support messages — sentiment features
+
+- [ ] Add `_load_support_messages(data_dir)`:
+  - Load `support_messages.json` — full conversation transcripts per ticket
+  - Parse per-ticket: `role` (customer / bot / human) + `content` (text)
+  - Compute:
+    - `msg_count` — total messages in thread
+    - `customer_msg_count` — customer-only messages
+    - `avg_customer_msg_length` — avg chars per customer message (frustration proxy)
+    - `n_escalations` — bot→human handoffs in thread
+    - `response_time_first_seconds` — seconds to first agent reply
+  - Join to `support_tickets` on `ticket_id`, then inherited via `order_id`
+- [ ] Fill: all 0 for orders with no ticket (same pattern as `resolution_time_minutes`)
+- [ ] New features → all **numeric**
+
+**Expected impact:** `satisfaction_rating` RMSE should drop below 1.0 (currently at naive baseline 1.17).
+
+---
+
+### 8.7 Validate all new features
+
+- [ ] `python nn/estimator.py --list_targets` — confirm new columns appear in the feature list
+- [ ] `python nn/estimator.py --target satisfaction_rating --epochs 30` — expect RMSE < 1.17
+- [ ] `python nn/estimator.py --target has_refund --epochs 30` — AUC should hold ≥ 0.83 (no regression)
+- [ ] `python nn/estimator.py --target damaged_in_transit --epochs 30` — `variant_return_rate` should appear in top importances
+- [ ] `python nn/estimator.py --target total_price --epochs 30` — RMSE should hold ≤ £4.37
+
+**Files to change:** `nn/data_builder.py` only — 6 new load functions + updates to `_build_joined()`, `CATEGORICAL_COLS`, and `drop_cols`.
+
+**New feature count:** +4 categorical + ~11 numeric = ~15 total new features. Feature matrix grows from 53 → ~68 columns.
+
+**Effort:** ~90 min
 
 ---
 
