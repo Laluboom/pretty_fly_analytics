@@ -4,6 +4,7 @@ import os
 import json
 import pickle
 import numpy as np
+import pandas as pd
 import torch
 
 # Allow running from project root or from nn/ directory
@@ -12,6 +13,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from nn.data_builder import build_feature_table, prepare_for_target
 from nn.model import train_model, PrettyFlyNet, get_loss_fn, PrettyFlyDataset
 from torch.utils.data import DataLoader
+
+# OpenRouter model preference order for --llm flag
+OPENROUTER_MODELS = [
+    "deepseek/deepseek-chat-v3-0324:free",      # free, best quality
+    "google/gemma-3-27b-it:free",                # free, solid fallback
+    "mistralai/mistral-small-3.1-24b-instruct",  # cheap, last resort
+]
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +41,7 @@ def parse_args():
     parser.add_argument("--plot",        action="store_true",        help="Save feature importance bar chart as importance_{target}.png")
     parser.add_argument("--subset",      type=str,   default=None,  help="Filter rows before training, e.g. \"product_type=Hoodie\"")
     parser.add_argument("--recommend",   action="store_true",        help="After --predict, call an LLM via OpenRouter for a plain-English business recommendation (requires OPENROUTER_API_KEY)")
-    parser.add_argument("--model",       type=str,   default=None,  help=f"OpenRouter model to use with --recommend (default: {OPENROUTER_MODELS[0]})")
+    parser.add_argument("--llm",         type=str,   default=None,  help=f"OpenRouter model to use with --recommend (default: {OPENROUTER_MODELS[0]})")
     return parser.parse_args()
 
 
@@ -187,7 +195,7 @@ def save_model(model, feature_meta, task_type, n_classes, target_col, target_enc
 # 5.2  Load model + predict from JSON row
 # ---------------------------------------------------------------------------
 
-def load_and_predict(prefix, raw_input, data_dir=None, recommend=False, model=None):
+def load_and_predict(prefix, raw_input, data_dir=None, recommend=False, llm_model=None):
     with open(f"{prefix}.pkl", "rb") as f:
         meta = pickle.load(f)
 
@@ -255,7 +263,6 @@ def load_and_predict(prefix, raw_input, data_dir=None, recommend=False, model=No
     # meaning "no support thread = neutral customer" — correct behaviour for inference on new orders.
 
     # Scale numerics — build a single-row DataFrame so sklearn doesn't warn about feature names
-    import pandas as pd
     num_row = pd.DataFrame([[float(row.get(col, 0.0)) for col in num_cols]], columns=num_cols)
     num_scaled = scaler.transform(num_row)[0].astype(np.float32)
 
@@ -296,7 +303,7 @@ def load_and_predict(prefix, raw_input, data_dir=None, recommend=False, model=No
         user_row = {k: v for k, v in row.items()
                     if k in set(cat_cols) | set(num_cols)}
         get_recommendation(target_col, task_type, prediction_str, user_row, top_importances,
-                           model=model)
+                           llm_model=llm_model)
 
 
 # ---------------------------------------------------------------------------
@@ -334,16 +341,8 @@ def plot_importance(ranked, target_col, metric_name, val_metric):
 # Ph9  LLM recommendation layer
 # ---------------------------------------------------------------------------
 
-# OpenRouter model preference order — first available is used
-OPENROUTER_MODELS = [
-    "deepseek/deepseek-chat-v3-0324:free",   # free, best quality
-    "google/gemma-3-27b-it:free",             # free, solid fallback
-    "mistralai/mistral-small-3.1-24b-instruct",  # cheap, last resort
-]
-
-
 def get_recommendation(target_col, task_type, prediction_str, input_row, top_importances,
-                       model=None):
+                       llm_model=None):
     """
     Call an LLM via OpenRouter with the model's prediction and top feature importances
     to produce a plain-English business recommendation for Pretty Fly.
@@ -355,7 +354,7 @@ def get_recommendation(target_col, task_type, prediction_str, input_row, top_imp
     prediction_str  : str        — human-readable prediction, e.g. "1 (probability=0.81)"
     input_row       : dict       — the raw JSON the user supplied
     top_importances : list       — [(feature_name, score), ...] top 5 from permutation importance
-    model           : str | None — override the default model preference order
+    llm_model       : str | None — override the default model preference order
     """
     from openai import OpenAI
 
@@ -370,7 +369,7 @@ def get_recommendation(target_col, task_type, prediction_str, input_row, top_imp
         api_key=api_key,
     )
 
-    chosen_model = model or OPENROUTER_MODELS[0]
+    chosen_model = llm_model or OPENROUTER_MODELS[0]
 
     importance_lines = "\n".join(
         f"  {i+1}. {name} (importance score: {score:.4f})"
@@ -444,8 +443,11 @@ def main():
             print("  export OPENROUTER_API_KEY=sk-or-...")
             sys.exit(1)
         load_and_predict(args.load_model, args.predict, args.data_dir,
-                         recommend=args.recommend, model=args.model)
+                         recommend=args.recommend, llm_model=args.llm)
         return
+
+    if args.recommend:
+        print("Warning: --recommend only works with --predict and --load_model, ignored.")
 
     # Build feature table
     df = build_feature_table(args.data_dir)
