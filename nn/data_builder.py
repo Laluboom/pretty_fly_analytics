@@ -175,6 +175,10 @@ def _engineer_features(df):
     df["is_discounted"] = df["discount_code"].notna().astype(int)
     df["total_ad_spend"] = df["google_spend"] + df["meta_spend"]
     df["total_ad_conversions"] = df["google_conversions"] + df["meta_conversions"]
+    # Pre-computed sum so total_price model sees the exact algebraic identity
+    df["price_components_sum"] = (
+        df["subtotal"] + df["total_shipping"] + df["total_tax"] - df["total_discounts"]
+    )
     df["accepts_marketing"] = df["accepts_marketing"].astype(int)
     df["has_refund"] = df["has_refund"].astype(int)
     df["has_ticket"] = df["has_ticket"].astype(int)

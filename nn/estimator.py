@@ -209,6 +209,21 @@ def load_and_predict(prefix, raw_input, data_dir=None):
     else:
         row = json.loads(raw_input)
 
+    # Auto-compute engineered features from raw inputs if components are present
+    def _get(k, default=0.0):
+        return float(row.get(k, default))
+
+    row["discount_pct"] = row.get("discount_pct",
+        min(_get("total_discounts") / _get("subtotal"), 1.0) if _get("subtotal") else 0.0)
+    row["gross_margin_est"] = row.get("gross_margin_est",
+        (_get("price") - _get("landed_cost_per_unit_gbp")) / _get("price") if _get("price") else 0.0)
+    row["total_ad_spend"] = row.get("total_ad_spend",
+        _get("google_spend") + _get("meta_spend"))
+    row["total_ad_conversions"] = row.get("total_ad_conversions",
+        _get("google_conversions") + _get("meta_conversions"))
+    row["price_components_sum"] = row.get("price_components_sum",
+        _get("subtotal") + _get("total_shipping") + _get("total_tax") - _get("total_discounts"))
+
     # Build cat and num arrays, filling missing with defaults
     cat_cols = feature_meta["cat_cols"]
     num_cols = feature_meta["num_cols"]
