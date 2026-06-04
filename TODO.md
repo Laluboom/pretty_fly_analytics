@@ -504,6 +504,87 @@ python nn/estimator.py --target has_refund --epochs 30
 
 ---
 
+## Pre-Phase 10 Cleanup
+
+> Items identified during audit before adding Phase 10. Fix these first to avoid stale docs misleading reviewers and to unblock clean Phase 10 implementation.
+
+---
+
+### 🔴 D1 — `REPORT.md` is significantly stale *(REPORT.md)*
+
+- **Problem:** Written before leakage fixes and Phase 8. Contains wrong metrics that will mislead anyone reading it:
+  - `has_refund` AUC shown as **1.0000** — real is **0.844** (leakage fixed in B1)
+  - `total_price` RMSE shown as **£6.42** — real is **£4.37** (price_components_sum fix)
+  - References only **10 tables** joined — now **21**
+  - Only **6 targets** covered — now **73 columns** available
+  - Summary table still shows fake perfect pre-fix results
+- **Fix:** Rewrite evaluation results section with live numbers; update join chain; update target count; add Phase 8 new targets
+- **File:** `REPORT.md`
+- **Effort:** 20 min
+
+---
+
+### 🔴 D2 — `README_nn.md` has stale numbers *(README_nn.md)*
+
+- **Problem:** Numbers written before Phase 8 still visible to anyone visiting the repo:
+  - "51 things you can predict" → now **73**
+  - "10 tables" → **21**
+  - "353 lines" in data_builder → **579**
+  - Missing all Phase 8 new targets (`delivery_delay_days`, `variant_return_rate`, `city`, etc.)
+- **Fix:** Update feature count, table count, line count, target examples table
+- **File:** `README_nn.md`
+- **Effort:** 10 min
+
+---
+
+### 🟡 D3 — `support_messages.json` loaded twice *(nn/data_builder.py)*
+
+- **Problem:** `_load_support_message_features()` already reads `support_messages.json` (1.5MB). Phase 10 will add `_load_support_sentiment_features()` which reads the same file again. Two full reads of the same file per `build_feature_table()` call — ~0.5s wasted, messy.
+- **Fix:** Extract a shared `_parse_support_messages()` that reads and parses the JSON once, returns the raw list. Both loaders call that instead of opening the file themselves.
+- **File:** `nn/data_builder.py`
+- **Effort:** 5 min
+- **Must fix before Phase 10** — otherwise Phase 10 adds a third load
+
+---
+
+### 🟡 D4 — `pretty_fly_master.csv` is stale locally *(gitignored)*
+
+- **Problem:** Generated before Phase 8 at 53 columns. Now the feature matrix is 73 columns. File is gitignored so doesn't affect the repo, but if opened locally it will show wrong/missing features.
+- **Fix:** Regenerate: `python3 -c "from nn.data_builder import build_feature_table; build_feature_table().to_csv('pretty_fly_master.csv', index=False)"`
+- **Effort:** 1 min (just run the command)
+
+---
+
+### 🟢 D5 — U3 already fixed — mark done in TODO *(TODO.md)*
+
+- **Problem:** U3 (`evaluate.py --all` rebuilds table 6×) is listed as pending but was already fixed. `evaluate.py` builds the table once in `main()` at line 415 and passes `df` to each `run_target(df, ...)`.
+- **Fix:** Mark U3 as ✅ DONE in the priority table
+- **Effort:** 1 min
+
+---
+
+### 🟢 D6 — Phase 10 inference gap is documented but not handled *(nn/estimator.py)*
+
+- **Problem:** After Phase 10, `avg_sentiment`, `min_sentiment`, `pct_negative_msgs` will be in the feature matrix. At `--predict` time users won't have a support message thread to score. Currently these will default to 0 (neutral) via the existing missing-field fallback — which is the correct behaviour — but it's not documented anywhere.
+- **Fix:** Add a comment in `load_and_predict()` noting that sentiment features default to 0 (neutral) at inference, meaning "no support thread = assume neutral customer"
+- **File:** `nn/estimator.py`
+- **Effort:** 2 min
+
+---
+
+### Priority order for cleanup
+
+| # | ID | Item | Effort | Block? |
+|---|----|------|--------|--------|
+| 1 | D3 | Fix double JSON load | 5 min | ✋ Blocks Phase 10 |
+| 2 | D5 | Mark U3 done in TODO | 1 min | — |
+| 3 | D4 | Regenerate master CSV | 1 min | — |
+| 4 | D2 | Update README_nn.md | 10 min | — |
+| 5 | D1 | Update REPORT.md | 20 min | — |
+| 6 | D6 | Document inference gap | 2 min | — |
+
+---
+
 ## Quick Reference: Key Column Names per File
 
 | File | Target-worthy columns |
@@ -636,7 +717,7 @@ Findings from code inspection + live evaluation runs. Each item has a root cause
 | 4 | **M1** — Add `min_delta` to early stopping | 10 min | Cleaner training output | ✅ DONE |
 | 5 | **B3** — Fix bar chart scaling | 5 min | Readable importance output | ✅ DONE |
 | 6 | **F1** / **Ph8** — Sentiment features from support_messages.json | 60 min | Unlocks satisfaction_rating | ⬜ TODO |
-| 7 | **U3** — Build table once in evaluate.py | 5 min | 18s saved per --all run | ⬜ TODO |
+| 7 | **U3** — Build table once in evaluate.py | 5 min | 18s saved per --all run | ✅ DONE |
 | 8 | **M3** — LR scheduler for noisy regression | 15 min | Smoother total_price training | ✅ DONE |
 | 9 | **U1** — Warn on unknown predict keys | 10 min | Better UX | ⬜ TODO |
 | 10 | **M4** — Cross-val for sparse targets | 30 min | Reliable satisfaction metrics | ✅ DONE |
