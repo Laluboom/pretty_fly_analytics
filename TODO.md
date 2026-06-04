@@ -211,11 +211,11 @@ Add .gitignore and add appropriate files there ✅ DONE
 
 > Lets you train and predict on a slice of data — e.g. Hoodies only, Sweatpants only — without touching any other code.
 
-- [ ] Add `--subset` argument to `parse_args()` in `nn/estimator.py` — accepts `"col=value"` string (e.g. `"product_type=Hoodie"`)
-- [ ] Parse the string into `(col, val)` in `main()`, apply as a row filter on the feature table before `prepare_for_target()` is called
-- [ ] Print a log line: `Subset : product_type==Hoodie → 37,412 rows (from 69,956)`
-- [ ] Validate that the column exists and the value is present — exit with helpful error if not
-- [ ] Update `--list_targets` to note that `--subset` can be combined with any target
+- [x] Add `--subset` argument to `parse_args()` in `nn/estimator.py` — accepts `"col=value"` string (e.g. `"product_type=Hoodie"`)
+- [x] Parse the string into `(col, val)` in `main()`, apply as a row filter on the feature table before `prepare_for_target()` is called
+- [x] Print a log line: `Subset : product_type==Hoodie → 13,803 rows (from 69,956)`
+- [x] Validate that the column exists and the value is present — exit with helpful error + available values if not
+- [x] Update `--list_targets` to note that `--subset` can be combined with any target
 
 **Example usage:**
 ```bash
@@ -366,47 +366,26 @@ python nn/estimator.py --target has_refund --epochs 30 --subset "product_type=Sw
 
 > After the neural network makes a prediction, pass the input features + prediction to a Claude API call that returns a plain-English recommendation: *"High refund risk — consider reducing price by 10% or updating the sizing guide for this collection."*
 
-### 9.1 Add `--recommend` flag to CLI
-- [ ] Add `--recommend` boolean flag to `parse_args()` in `nn/estimator.py` — only active when `--predict` and `--load_model` are also set
-- [ ] Validate that `ANTHROPIC_API_KEY` env var is set — print a clear error if not
+### 9.1 Add `--recommend` flag to CLI ✅ DONE
+- [x] Add `--recommend` boolean flag and `--llm` model override to `parse_args()`
+- [x] Only active when `--predict` and `--load_model` are also set — warns and ignores otherwise
+- [x] Validate `OPENROUTER_API_KEY` env var — prints clear error if not set
+- [x] `.env.example` added; `.env` added to `.gitignore`
 
-### 9.2 Build the recommendation prompt
-- [ ] After `load_and_predict()` returns the prediction, construct a structured prompt containing:
-  - Target column name and task type
-  - The input features provided by the user (the JSON row)
-  - The model's prediction and confidence
-  - The top 5 feature importances for this target (from the saved `.pkl` metadata)
-  - The dataset context (Pretty Fly, London streetwear brand, 2-year history)
-- [ ] Send to Claude via `anthropic` Python SDK (model: `claude-haiku-4-5-20251001` — fast and cheap for inference-time calls)
+### 9.2 LLM recommendation via OpenRouter ✅ DONE
+- [x] `get_recommendation()` built with structured prompt: target, task type, prediction, input features, top 5 importances, brand context
+- [x] Uses `openai` SDK with `base_url=https://openrouter.ai/api/v1` (OpenRouter-compatible)
+- [x] Default model order: DeepSeek free → Gemma 3 free → Mistral cheap
+- [x] Streams response token-by-token
+- [x] `top_importances` persisted in `.pkl` at `--save_model` time
 
-### 9.3 Parse and print the recommendation
-- [ ] Stream or print the LLM response below the prediction output block
-- [ ] Format clearly:
-  ```
-  ============================================================
-    RECOMMENDATION (Claude)
-  ============================================================
-    Risk level  : HIGH (0.81 predicted probability)
-    Top signal  : size_issue strongly predicts this outcome
+### 9.3 Known issues / open items
+- [ ] **`user_row` in prompt is noisy** — `input_row` passed to the LLM contains all 70+ feature columns (most defaulting to 0.0) rather than only the keys the user actually provided. The LLM sees noise instead of signal. Fix: capture the original parsed JSON keys before auto-computation and filter to those only. See bottom of TODO for full description.
 
-    Suggested actions:
-    1. Review sizing guide for Hoodies in the Core collection
-    2. Add a size comparison chart to the product page
-    3. Trial a 15% discount on this SKU with a test audience
-       before the next drop
-  ============================================================
-  ```
-
-### 9.4 Validate
-- [ ] Run end-to-end: `python nn/estimator.py --predict '{"product_type": "Hoodie", "size_issue": 1}' --load_model models/damaged_in_transit --recommend`
-- [ ] Confirm recommendation is relevant to the prediction, not generic
-- [ ] Confirm graceful failure if `ANTHROPIC_API_KEY` is missing
-
-**Files to change:**
-- `nn/estimator.py` — `parse_args()`, `load_and_predict()`, new `get_recommendation()` function
-- `requirements_nn.txt` — add `anthropic`
-
-**Effort:** ~90 min
+**Files changed:**
+- `nn/estimator.py` — `parse_args()`, `load_and_predict()`, `get_recommendation()`, `save_model()`
+- `requirements_nn.txt` — added `openai` (not anthropic)
+- `.env.example`, `.gitignore`
 
 ---
 
@@ -716,11 +695,74 @@ Findings from code inspection + live evaluation runs. Each item has a root cause
 | 3 | **M2** — Seed torch for reproducibility | 5 min | Stable demo runs | ✅ DONE |
 | 4 | **M1** — Add `min_delta` to early stopping | 10 min | Cleaner training output | ✅ DONE |
 | 5 | **B3** — Fix bar chart scaling | 5 min | Readable importance output | ✅ DONE |
-| 6 | **F1** / **Ph8** — Sentiment features from support_messages.json | 60 min | Unlocks satisfaction_rating | ⬜ TODO |
+| 6 | **F1** / **Ph8** — Full data integration (all 21 files) | 90 min | 73→76 cols, new targets | ✅ DONE |
 | 7 | **U3** — Build table once in evaluate.py | 5 min | 18s saved per --all run | ✅ DONE |
 | 8 | **M3** — LR scheduler for noisy regression | 15 min | Smoother total_price training | ✅ DONE |
-| 9 | **U1** — Warn on unknown predict keys | 10 min | Better UX | ⬜ TODO |
+| 9 | **U1** — Warn on unknown predict keys | 10 min | Better UX | ✅ DONE |
 | 10 | **M4** — Cross-val for sparse targets | 30 min | Reliable satisfaction metrics | ✅ DONE |
-| 11 | **Ph7** — `--subset` flag for per-product filtering | 20 min | Slice training by product type | ⬜ TODO |
-| 12 | **Ph9** — LLM recommendation layer on `--predict` | 90 min | Actionable business output | ⬜ TODO |
-| 13 | **Ph10** — VADER sentiment on customer messages | 30 min | Actually fix satisfaction_rating | ⬜ TODO |
+| 11 | **Ph7** — `--subset` flag for per-product filtering | 20 min | Slice training by product type | ✅ DONE |
+| 12 | **Ph9** — LLM recommendation via OpenRouter (`--recommend` + `--llm`) | 90 min | Actionable business output | ✅ DONE |
+| 13 | **Ph10** — VADER sentiment on customer messages | 30 min | avg/min/pct_negative per ticket | ✅ DONE |
+| 14 | **D3** — Shared `_parse_support_messages()` — one JSON read | 5 min | No duplicate file read in Ph10 | ✅ DONE |
+| 15 | **D1** — Rewrite REPORT.md with live 30-epoch metrics | 20 min | Accurate docs for judges | ✅ DONE |
+| 16 | **D2** — Update README_nn.md stale numbers | 10 min | 51→76 targets, 10→21 files | ✅ DONE |
+| 17 | **D6** — Document sentiment inference gap in load_and_predict | 2 min | Comment added | ✅ DONE |
+| 18 | **F3** — Simplify gross_margin_est fallback | 5 min | Dead lambda removed | ✅ DONE |
+| 19 | **R1** — Fix `user_row` noise in `--recommend` prompt | 15 min | LLM sees signal not zeros | ⬜ TODO |
+
+---
+
+## Open Issue R1 — `user_row` prompt noise in `--recommend`
+
+> **Status:** ⬜ TODO — deferred, review before demo
+
+### Problem
+
+In `load_and_predict()`, the `user_row` passed to `get_recommendation()` is built like this:
+
+```python
+user_row = {k: v for k, v in row.items() if k in set(cat_cols) | set(num_cols)}
+```
+
+By this point, `row` has already had auto-computed engineered features added to it (`discount_pct`, `gross_margin_est`, `total_ad_spend`, `price_components_sum`) **and** all 70+ model features will default to `0.0` when the user only provided 2–3 keys. So the LLM receives something like:
+
+```
+price: 85.0
+product_type: Hoodie
+discount_pct: 0.0
+gross_margin_est: 0.0
+total_ad_spend: 0.0
+email_open_count: 0.0
+avg_sentiment: 0.0
+lead_time_days: 0.0
+... (60+ more zero-value defaults)
+```
+
+This drowns out the actual user signal. The LLM has no way to tell which values were intentional vs default fills.
+
+### Why it matters
+
+The whole value of `--recommend` is that it ties advice to *what the user told us*. With 60+ zero-noise features in the prompt, the recommendation becomes generic — the model can't distinguish "customer has city=London" from "city was not provided, defaulted to 0".
+
+### Fix
+
+Capture the original JSON keys **before** auto-computation and use those as the filter:
+
+```python
+# In load_and_predict(), right after parsing the JSON:
+user_provided_keys = set(row.keys())   # capture before auto-compute
+
+# ... auto-computation block runs ...
+
+# When building user_row for the recommendation:
+user_row = {k: v for k, v in row.items()
+            if k in user_provided_keys and k in (set(cat_cols) | set(num_cols))}
+```
+
+This way the LLM only sees the 2–5 features the user actually typed, making the recommendation specific and actionable.
+
+### Files to change
+- `nn/estimator.py` — `load_and_predict()` only, ~3 lines
+
+### Effort
+~5 min code, ~10 min to test prompt quality with a real API call

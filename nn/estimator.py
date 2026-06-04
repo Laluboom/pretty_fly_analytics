@@ -297,8 +297,10 @@ def load_and_predict(prefix, raw_input, data_dir=None, recommend=False, llm_mode
         print(f"Prediction : {prediction_str}")
 
     if recommend:
-        # Load top importances from saved metadata if available
         top_importances = meta.get("top_importances", [])
+        if not top_importances:
+            print("Note: saved model has no feature importances (saved before Ph9) — "
+                  "re-run with --save_model to persist them for richer recommendations.")
         # Filter out auto-computed keys added before the warning check
         user_row = {k: v for k, v in row.items()
                     if k in set(cat_cols) | set(num_cols)}
@@ -448,6 +450,8 @@ def main():
 
     if args.recommend:
         print("Warning: --recommend only works with --predict and --load_model, ignored.")
+    if args.llm:
+        print("Warning: --llm only works with --predict and --load_model, ignored.")
 
     # Build feature table
     df = build_feature_table(args.data_dir)
