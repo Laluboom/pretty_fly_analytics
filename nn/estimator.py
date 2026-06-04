@@ -32,6 +32,8 @@ def parse_args():
     parser.add_argument("--load_model",  type=str,   default=None,  help="Path prefix of saved model to load for --predict")
     parser.add_argument("--plot",        action="store_true",        help="Save feature importance bar chart as importance_{target}.png")
     parser.add_argument("--subset",      type=str,   default=None,  help="Filter rows before training, e.g. \"product_type=Hoodie\"")
+    parser.add_argument("--recommend",   action="store_true",        help="After --predict, call an LLM via OpenRouter for a plain-English business recommendation (requires OPENROUTER_API_KEY)")
+    parser.add_argument("--model",       type=str,   default=None,  help=f"OpenRouter model to use with --recommend (default: {OPENROUTER_MODELS[0]})")
     return parser.parse_args()
 
 
@@ -163,16 +165,18 @@ def print_results(target_col, task_type, metric_name, val_metric,
 # 5.1  Save model
 # ---------------------------------------------------------------------------
 
-def save_model(model, feature_meta, task_type, n_classes, target_col, target_encoder, prefix):
+def save_model(model, feature_meta, task_type, n_classes, target_col, target_encoder, prefix,
+               top_importances=None):
     os.makedirs(os.path.dirname(prefix) if os.path.dirname(prefix) else ".", exist_ok=True)
     torch.save(model.state_dict(), f"{prefix}.pt")
     meta = {
-        "feature_meta":   feature_meta,
-        "task_type":      task_type,
-        "n_classes":      n_classes,
-        "target_col":     target_col,
-        "target_encoder": target_encoder,
-        "n_num_features": len(feature_meta["num_cols"]),
+        "feature_meta":    feature_meta,
+        "task_type":       task_type,
+        "n_classes":       n_classes,
+        "target_col":      target_col,
+        "target_encoder":  target_encoder,
+        "n_num_features":  len(feature_meta["num_cols"]),
+        "top_importances": top_importances or [],
     }
     with open(f"{prefix}.pkl", "wb") as f:
         pickle.dump(meta, f)
@@ -183,7 +187,7 @@ def save_model(model, feature_meta, task_type, n_classes, target_col, target_enc
 # 5.2  Load model + predict from JSON row
 # ---------------------------------------------------------------------------
 
-def load_and_predict(prefix, raw_input, data_dir=None):
+def load_and_predict(prefix, raw_input, data_dir=None, recommend=False, model=None):
     with open(f"{prefix}.pkl", "rb") as f:
         meta = pickle.load(f)
 
@@ -264,21 +268,35 @@ def load_and_predict(prefix, raw_input, data_dir=None):
     print(f"\nPredicting: {target_col}")
     print(f"Input features used: {len(x_cat)} categorical + {len(num_scaled)} numeric")
 
+    prediction_str = ""
     if task_type == "binary":
         prob = out.squeeze().item()
         label = 1 if prob >= 0.5 else 0
-        print(f"Prediction : {label}  (probability={prob:.4f})")
+        prediction_str = f"{label}  (probability={prob:.4f})"
+        print(f"Prediction : {prediction_str}")
     elif task_type == "classification":
         probs = torch.softmax(out, dim=1).squeeze().numpy()
         pred_idx = int(probs.argmax())
         if target_encoder:
             pred_label = target_encoder.inverse_transform([pred_idx])[0]
-            print(f"Prediction : {pred_label}  (confidence={probs[pred_idx]:.4f})")
+            prediction_str = f"{pred_label}  (confidence={probs[pred_idx]:.4f})"
         else:
-            print(f"Prediction : class {pred_idx}  (confidence={probs[pred_idx]:.4f})")
+            pred_label = f"class {pred_idx}"
+            prediction_str = f"{pred_label}  (confidence={probs[pred_idx]:.4f})"
+        print(f"Prediction : {prediction_str}")
     else:
         val = out.squeeze().item()
-        print(f"Prediction : {val:.4f}")
+        prediction_str = f"{val:.4f}"
+        print(f"Prediction : {prediction_str}")
+
+    if recommend:
+        # Load top importances from saved metadata if available
+        top_importances = meta.get("top_importances", [])
+        # Filter out auto-computed keys added before the warning check
+        user_row = {k: v for k, v in row.items()
+                    if k in set(cat_cols) | set(num_cols)}
+        get_recommendation(target_col, task_type, prediction_str, user_row, top_importances,
+                           model=model)
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +331,103 @@ def plot_importance(ranked, target_col, metric_name, val_metric):
 
 
 # ---------------------------------------------------------------------------
+# Ph9  LLM recommendation layer
+# ---------------------------------------------------------------------------
+
+# OpenRouter model preference order — first available is used
+OPENROUTER_MODELS = [
+    "deepseek/deepseek-chat-v3-0324:free",   # free, best quality
+    "google/gemma-3-27b-it:free",             # free, solid fallback
+    "mistralai/mistral-small-3.1-24b-instruct",  # cheap, last resort
+]
+
+
+def get_recommendation(target_col, task_type, prediction_str, input_row, top_importances,
+                       model=None):
+    """
+    Call an LLM via OpenRouter with the model's prediction and top feature importances
+    to produce a plain-English business recommendation for Pretty Fly.
+
+    Parameters
+    ----------
+    target_col      : str        — e.g. "has_refund"
+    task_type       : str        — "binary" | "regression" | "classification"
+    prediction_str  : str        — human-readable prediction, e.g. "1 (probability=0.81)"
+    input_row       : dict       — the raw JSON the user supplied
+    top_importances : list       — [(feature_name, score), ...] top 5 from permutation importance
+    model           : str | None — override the default model preference order
+    """
+    from openai import OpenAI
+
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        print("\nError: OPENROUTER_API_KEY environment variable is not set.")
+        print("  export OPENROUTER_API_KEY=sk-or-...")
+        return
+
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+    )
+
+    chosen_model = model or OPENROUTER_MODELS[0]
+
+    importance_lines = "\n".join(
+        f"  {i+1}. {name} (importance score: {score:.4f})"
+        for i, (name, score) in enumerate(top_importances[:5])
+    )
+    input_lines = "\n".join(f"  {k}: {v}" for k, v in input_row.items())
+
+    prompt = f"""You are a data analyst assistant for Pretty Fly, a London-based streetwear brand.
+A neural network has just made the following prediction:
+
+Target variable : {target_col}
+Task type       : {task_type}
+Prediction      : {prediction_str}
+
+Input features provided:
+{input_lines}
+
+Top 5 features driving this prediction (permutation importance):
+{importance_lines}
+
+Brand context: Pretty Fly sells hoodies, tees, caps, outerwear, sweatpants and trainers.
+Their customers are primarily UK-based. Data covers 24 months of orders, returns, support
+tickets, supplier chain, email campaigns, and ad spend.
+
+Based on the prediction and the signals above, give a concise, actionable business
+recommendation. Structure your response as:
+
+Risk/Outlook : [one line summary of what the prediction means]
+Key signal   : [the most important feature and what it tells us]
+
+Suggested actions:
+1. [specific action]
+2. [specific action]
+3. [specific action]
+
+Keep the tone direct and practical. No generic advice — tie every action to the specific
+prediction and features shown."""
+
+    print("\n" + "=" * 60)
+    print(f"  RECOMMENDATION  ({chosen_model})")
+    print("=" * 60)
+
+    stream = client.chat.completions.create(
+        model=chosen_model,
+        max_tokens=400,
+        messages=[{"role": "user", "content": prompt}],
+        stream=True,
+    )
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            print(delta, end="", flush=True)
+
+    print("\n" + "=" * 60)
+
+
+# ---------------------------------------------------------------------------
 # 3.2  Main orchestration
 # ---------------------------------------------------------------------------
 
@@ -324,7 +439,12 @@ def main():
         if not args.load_model:
             print("Error: --predict requires --load_model <prefix>")
             sys.exit(1)
-        load_and_predict(args.load_model, args.predict, args.data_dir)
+        if args.recommend and not os.environ.get("OPENROUTER_API_KEY"):
+            print("Error: --recommend requires OPENROUTER_API_KEY to be set.")
+            print("  export OPENROUTER_API_KEY=sk-or-...")
+            sys.exit(1)
+        load_and_predict(args.load_model, args.predict, args.data_dir,
+                         recommend=args.recommend, model=args.model)
         return
 
     # Build feature table
@@ -396,7 +516,8 @@ def main():
     # --save_model
     if args.save_model:
         save_model(model, feature_meta, task_type, n_classes,
-                   args.target, target_encoder, args.save_model)
+                   args.target, target_encoder, args.save_model,
+                   top_importances=ranked)
 
     # --plot
     if args.plot:

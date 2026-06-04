@@ -35,6 +35,9 @@ Thumbs.db
 # LibreOffice / editor lock files
 .~lock.*#
 
+# Environment / secrets
+.env
+
 # IDE
 .idea/
 .vscode/
