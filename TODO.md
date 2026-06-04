@@ -72,7 +72,7 @@
   - `y`: `FloatTensor` for regression/binary, `LongTensor` for multi-class
 
 ### 2.2 Network definition
-- [ ] `class PrettyFlyNet(nn.Module)`:
+- [x] `class PrettyFlyNet(nn.Module)`:
   - `__init__(self, cat_vocab_sizes, n_num_features, task_type, n_classes=1, emb_dim=8)`:
     - `nn.ModuleList` of `nn.Embedding(vocab_size + 1, emb_dim)` for each categorical col
     - `emb_output_dim = len(cat_vocab_sizes) * emb_dim`
@@ -88,7 +88,7 @@
     - Pass through MLP + output head
 
 ### 2.3 Loss function selector
-- [ ] `get_loss_fn(task_type)`:
+- [x] `get_loss_fn(task_type)`:
   - `regression` → `nn.MSELoss()`
   - `binary` → `nn.BCELoss()`
   - `classification` → `nn.CrossEntropyLoss()`
@@ -241,14 +241,14 @@ python nn/estimator.py --target has_refund --epochs 30 --subset "product_type=Sw
 
 ### 8.1 Discount codes — join on `orders.discount_code`
 
-- [ ] Add `_load_discount_codes(data_dir)` — load 8-row lookup table
-- [ ] Join to orders on `orders.discount_code == discount_codes.code` (LEFT JOIN — 85% of orders have no code)
-- [ ] New features:
+- [x] Add `_load_discount_codes(data_dir)` — load 8-row lookup table
+- [x] Join to orders on `orders.discount_code == discount_codes.code` (LEFT JOIN — 85% of orders have no code)
+- [x] New features:
   - `discount_type` — "percentage" / "fixed_amount" / "none" → **categorical**
   - `discount_value` — numeric value of the discount (0 if no code) → **numeric**
-- [ ] Fill: `discount_type = "none"`, `discount_value = 0` for orders without a code
-- [ ] Drop: `code`, `usage_count`, `starts_at`, `ends_at` (not per-order signals)
-- [ ] Add `"discount_type"` to `CATEGORICAL_COLS`
+- [x] Fill: `discount_type = "none"`, `discount_value = 0` for orders without a code
+- [x] Drop: `code`, `usage_count`, `starts_at`, `ends_at` (not per-order signals)
+- [x] Add `"discount_type"` to `CATEGORICAL_COLS`
 
 **Leakage check:** Neither column encodes any current target. Clean.
 
@@ -256,19 +256,19 @@ python nn/estimator.py --target has_refund --epochs 30 --subset "product_type=Sw
 
 ### 8.2 Suppliers + purchase orders — join chain via `po_line_items`
 
-- [ ] Add `_load_supplier_features(data_dir)`:
+- [x] Add `_load_supplier_features(data_dir)`:
   - Load `purchase_orders.csv` (21 rows) + `suppliers.csv` (5 rows)
   - Join purchase_orders → suppliers on `supplier_id`
   - Parse `expected_delivery` and `actual_delivery` as dates
   - Compute `delivery_delay_days = (actual_delivery - expected_delivery).dt.days` (negative = early, positive = late)
   - Join to `po_line_items` on `po_id` → gives one supplier row per variant (po_line_items already deduped per variant_id in existing pipeline)
-- [ ] New features per variant:
+- [x] New features per variant:
   - `supplier_country` — Portugal / Italy / Turkey / etc. → **categorical**
   - `lead_time_days` — 45–90 days (supplier speed proxy) → **numeric**
   - `delivery_delay_days` — actual vs promised delivery → **numeric**
-- [ ] Fill: `supplier_country = "unknown"`, `lead_time_days = median`, `delivery_delay_days = 0`
-- [ ] Drop: `po_id`, `supplier_id`, `supplier_name`, all date columns, `status` (all "received"), cost columns (already have landed_cost_per_unit_gbp)
-- [ ] Add `"supplier_country"` to `CATEGORICAL_COLS`
+- [x] Fill: `supplier_country = "unknown"`, `lead_time_days = median`, `delivery_delay_days = 0`
+- [x] Drop: `po_id`, `supplier_id`, `supplier_name`, all date columns, `status` (all "received"), cost columns (already have landed_cost_per_unit_gbp)
+- [x] Add `"supplier_country"` to `CATEGORICAL_COLS`
 
 **Leakage check:** Lead time and delivery delay don't encode any target. Clean.
 
@@ -276,16 +276,16 @@ python nn/estimator.py --target has_refund --epochs 30 --subset "product_type=Sw
 
 ### 8.3 Inventory movements — aggregate per variant
 
-- [ ] Add `_load_inventory_features(data_dir)`:
+- [x] Add `_load_inventory_features(data_dir)`:
   - Load `inventory_movements.csv` (76,444 rows — 3 movement types: `sale`, `return`, `po_receipt`)
   - Aggregate per `variant_id`:
     - `variant_latest_stock` = `running_balance` from the most recent movement (any type)
     - `variant_return_rate` = return movements / sale movements (0 if no sales)
     - `variant_restock_count` = count of `po_receipt` movements (how many times restocked)
   - Join to feature matrix on `variant_id`
-- [ ] Fill: 0 for variants with no movements (should not occur — all 645 variants have movements)
-- [ ] Drop: `movement_id`, `date`, `quantity_delta`, `reference_id`, `type` (used only for aggregation)
-- [ ] New features → all **numeric** (no CATEGORICAL_COLS change needed)
+- [x] Fill: 0 for variants with no movements (should not occur — all 645 variants have movements)
+- [x] Drop: `movement_id`, `date`, `quantity_delta`, `reference_id`, `type` (used only for aggregation)
+- [x] New features → all **numeric** (no CATEGORICAL_COLS change needed)
 
 **Pre-computation note:** `variant_return_rate` = returns / sales — compute as a ratio, not raw counts, to avoid scale issues.
 **Leakage check:** Stock levels don't encode any current target. `variant_return_rate` could correlate with `has_refund` / `size_issue` but is a legitimate feature (it's per-variant history, not per-order).
@@ -294,7 +294,7 @@ python nn/estimator.py --target has_refund --epochs 30 --subset "product_type=Sw
 
 ### 8.4 Email engagement — aggregate per customer
 
-- [ ] Add `_load_email_features(data_dir)`:
+- [x] Add `_load_email_features(data_dir)`:
   - Load `email_events.csv` (11,368 rows — event types: `sent`, `opened`, `clicked`, `converted`)
   - **Exclude `converted` events** — 65% of events are "converted", auto-attributed, not genuine engagement
   - Aggregate per `customer_id` over genuine engagement events (sent/opened/clicked only):
@@ -303,9 +303,9 @@ python nn/estimator.py --target has_refund --epochs 30 --subset "product_type=Sw
     - `email_campaign_count` — distinct campaigns customer appeared in
     - `days_since_last_email` — days between most recent email event and 2026-06-04 (reference date). Use large sentinel (999) for customers with no emails.
   - Join to feature matrix on `customer_id`
-- [ ] Fill: `email_open_count = 0`, `email_click_count = 0`, `email_campaign_count = 0`, `days_since_last_email = 999` for customers with no email history (84% of customers)
-- [ ] Drop: `event_id`, `campaign_id`, `timestamp`, `event_type` (used only for aggregation)
-- [ ] New features → all **numeric**
+- [x] Fill: `email_open_count = 0`, `email_click_count = 0`, `email_campaign_count = 0`, `days_since_last_email = 999` for customers with no email history (84% of customers)
+- [x] Drop: `event_id`, `campaign_id`, `timestamp`, `event_type` (used only for aggregation)
+- [x] New features → all **numeric**
 
 **Zero-inflation note:** 84% of customers have no email history — filling with 0 / 999 is correct. Do NOT filter rows. These customers are a real cohort (non-email-engaged).
 **Leakage check:** Email engagement does not encode any target. Clean.
@@ -314,14 +314,14 @@ python nn/estimator.py --target has_refund --epochs 30 --subset "product_type=Sw
 
 ### 8.5 Customer addresses — extract geography only
 
-- [ ] Add `_load_address_features(data_dir)`:
+- [x] Add `_load_address_features(data_dir)`:
   - Load `addresses.csv` (22,440 rows — one per customer)
   - Extract `postcode_district` = first segment of UK postcode (e.g., "IG1" from "IG1 1AT")
   - Keep `city` as-is
   - **Drop all PII**: `first_name`, `last_name`, `address1`, `address2` (100% null anyway), `province` (90% null), `country` (all GB — zero variance)
   - Join to feature matrix on `customer_id`
-- [ ] Fill: `postcode_district = "unknown"`, `city = "unknown"` for customers with no address
-- [ ] Add `"postcode_district"` and `"city"` to `CATEGORICAL_COLS`
+- [x] Fill: `postcode_district = "unknown"`, `city = "unknown"` for customers with no address
+- [x] Add `"postcode_district"` and `"city"` to `CATEGORICAL_COLS`
 
 **PII note:** Only postcode_district (area-level, not property-level) and city are used. Full postcode, full address, and names are dropped before any ML processing.
 
@@ -329,7 +329,7 @@ python nn/estimator.py --target has_refund --epochs 30 --subset "product_type=Sw
 
 ### 8.6 Support messages — sentiment features
 
-- [ ] Add `_load_support_messages(data_dir)`:
+- [x] Add `_load_support_messages(data_dir)`:
   - Load `support_messages.json` — full conversation transcripts per ticket
   - Parse per-ticket: `role` (customer / bot / human) + `content` (text)
   - Compute:
@@ -339,8 +339,8 @@ python nn/estimator.py --target has_refund --epochs 30 --subset "product_type=Sw
     - `n_escalations` — bot→human handoffs in thread
     - `response_time_first_seconds` — seconds to first agent reply
   - Join to `support_tickets` on `ticket_id`, then inherited via `order_id`
-- [ ] Fill: all 0 for orders with no ticket (same pattern as `resolution_time_minutes`)
-- [ ] New features → all **numeric**
+- [x] Fill: all 0 for orders with no ticket (same pattern as `resolution_time_minutes`)
+- [x] New features → all **numeric**
 
 **Expected impact:** `satisfaction_rating` RMSE should drop below 1.0 (currently at naive baseline 1.17).
 
@@ -348,11 +348,11 @@ python nn/estimator.py --target has_refund --epochs 30 --subset "product_type=Sw
 
 ### 8.7 Validate all new features
 
-- [ ] `python nn/estimator.py --list_targets` — confirm new columns appear in the feature list
-- [ ] `python nn/estimator.py --target satisfaction_rating --epochs 30` — expect RMSE < 1.17
-- [ ] `python nn/estimator.py --target has_refund --epochs 30` — AUC should hold ≥ 0.83 (no regression)
-- [ ] `python nn/estimator.py --target damaged_in_transit --epochs 30` — `variant_return_rate` should appear in top importances
-- [ ] `python nn/estimator.py --target total_price --epochs 30` — RMSE should hold ≤ £4.37
+- [x] `python nn/estimator.py --list_targets` — confirm new columns appear in the feature list
+- [x] `python nn/estimator.py --target satisfaction_rating --epochs 30` — expect RMSE < 1.17
+- [x] `python nn/estimator.py --target has_refund --epochs 30` — AUC should hold ≥ 0.83 (no regression)
+- [x] `python nn/estimator.py --target damaged_in_transit --epochs 30` — `variant_return_rate` should appear in top importances
+- [x] `python nn/estimator.py --target total_price --epochs 30` — RMSE should hold ≤ £4.37
 
 **Files to change:** `nn/data_builder.py` only — 6 new load functions + updates to `_build_joined()`, `CATEGORICAL_COLS`, and `drop_cols`.
 
@@ -380,7 +380,7 @@ python nn/estimator.py --target has_refund --epochs 30 --subset "product_type=Sw
 - [x] `top_importances` persisted in `.pkl` at `--save_model` time
 
 ### 9.3 Known issues / open items
-- [ ] **`user_row` in prompt is noisy** — `input_row` passed to the LLM contains all 70+ feature columns (most defaulting to 0.0) rather than only the keys the user actually provided. The LLM sees noise instead of signal. Fix: capture the original parsed JSON keys before auto-computation and filter to those only. See bottom of TODO for full description.
+- [x] **`user_row` in prompt is noisy** — `input_row` passed to the LLM contains all 70+ feature columns (most defaulting to 0.0) rather than only the keys the user actually provided. The LLM sees noise instead of signal. Fix: capture the original parsed JSON keys before auto-computation and filter to those only. See bottom of TODO for full description.
 
 **Files changed:**
 - `nn/estimator.py` — `parse_args()`, `load_and_predict()`, `get_recommendation()`, `save_model()`
@@ -401,23 +401,23 @@ python nn/estimator.py --target has_refund --epochs 30 --subset "product_type=Sw
 
 ### 10.1 Install VADER
 
-- [ ] Add `vaderSentiment` to `requirements_nn.txt`
-- [ ] Confirm install: `python -c "from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer"`
+- [x] Add `vaderSentiment` to `requirements_nn.txt`
+- [x] Confirm install: `python -c "from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer"`
 
 ---
 
 ### 10.2 Add `_load_support_sentiment_features()` to `nn/data_builder.py`
 
-- [ ] Load `support_messages.json` (already done in `_load_support_message_features` — share the parse logic or call it separately)
-- [ ] Initialise one `SentimentIntensityAnalyzer()` instance (reuse across all messages — it's stateless)
-- [ ] For each ticket, score **customer messages only** (skip bot/human agent messages — we want the customer's tone, not the bot's)
-- [ ] Compute per-ticket features:
+- [x] Load `support_messages.json` (already done in `_load_support_message_features` — share the parse logic or call it separately)
+- [x] Initialise one `SentimentIntensityAnalyzer()` instance (reuse across all messages — it's stateless)
+- [x] For each ticket, score **customer messages only** (skip bot/human agent messages — we want the customer's tone, not the bot's)
+- [x] Compute per-ticket features:
   - `avg_sentiment` — mean compound score across all customer messages in the thread (−1 to +1)
   - `min_sentiment` — lowest (most negative) single customer message score (catches peak frustration)
   - `pct_negative_msgs` — fraction of customer messages with compound < −0.05 (VADER's negativity threshold)
-- [ ] Build a DataFrame with `ticket_id` + 3 sentiment cols
-- [ ] Join to `support_tickets.csv` on `ticket_id` → get `order_id`
-- [ ] Return DataFrame keyed by `order_id`
+- [x] Build a DataFrame with `ticket_id` + 3 sentiment cols
+- [x] Join to `support_tickets.csv` on `ticket_id` → get `order_id`
+- [x] Return DataFrame keyed by `order_id`
 
 **Example:**
 ```python
@@ -430,22 +430,22 @@ score = sia.polarity_scores("This is absolutely awful!!")["compound"]  # → -0.
 
 ### 10.3 Join into master table in `_build_joined()`
 
-- [ ] Add `sentiment_features` parameter to `_build_joined()` signature
-- [ ] LEFT JOIN on `order_id` after the support_tickets join (same position as `support_message_features`)
-- [ ] Fill NaN with 0 for orders with no ticket (neutrality — no message means no signal either way)
-- [ ] New columns are numeric — no change to `CATEGORICAL_COLS`
-- [ ] Add to `FILTER_MAP`:
+- [x] Add `sentiment_features` parameter to `_build_joined()` signature
+- [x] LEFT JOIN on `order_id` after the support_tickets join (same position as `support_message_features`)
+- [x] Fill NaN with 0 for orders with no ticket (neutrality — no message means no signal either way)
+- [x] New columns are numeric — no change to `CATEGORICAL_COLS`
+- [x] Add to `FILTER_MAP`:
   - `"avg_sentiment": ("has_ticket", 1)` — only meaningful for ticket orders
   - `"min_sentiment": ("has_ticket", 1)`
   - `"pct_negative_msgs": ("has_ticket", 1)`
-- [ ] Wire into `build_feature_table()` — call `_load_support_sentiment_features()` alongside the other new loaders
+- [x] Wire into `build_feature_table()` — call `_load_support_sentiment_features()` alongside the other new loaders
 
 ---
 
 ### 10.4 Update `load_and_predict()` in `nn/estimator.py`
 
-- [ ] The 3 sentiment features will be in the saved model's `feature_meta.num_cols` after retraining
-- [ ] No user-facing change needed — missing sentiment fields default to 0 at inference (neutral sentiment assumed for orders without a support thread)
+- [x] The 3 sentiment features will be in the saved model's `feature_meta.num_cols` after retraining
+- [x] No user-facing change needed — missing sentiment fields default to 0 at inference (neutral sentiment assumed for orders without a support thread)
 
 ---
 
@@ -708,13 +708,13 @@ Findings from code inspection + live evaluation runs. Each item has a root cause
 | 16 | **D2** — Update README_nn.md stale numbers | 10 min | 51→76 targets, 10→21 files | ✅ DONE |
 | 17 | **D6** — Document sentiment inference gap in load_and_predict | 2 min | Comment added | ✅ DONE |
 | 18 | **F3** — Simplify gross_margin_est fallback | 5 min | Dead lambda removed | ✅ DONE |
-| 19 | **R1** — Fix `user_row` noise in `--recommend` prompt | 15 min | LLM sees signal not zeros | ⬜ TODO |
+| 19 | **R1** — Fix `user_row` noise in `--recommend` prompt | 15 min | LLM sees signal not zeros | ✅ DONE |
 
 ---
 
 ## Open Issue R1 — `user_row` prompt noise in `--recommend`
 
-> **Status:** ⬜ TODO — deferred, review before demo
+> **Status:** ✅ DONE — `user_provided_keys` captured before auto-computation; `user_row` filtered to user-supplied keys only
 
 ### Problem
 

@@ -222,6 +222,10 @@ def load_and_predict(prefix, raw_input, data_dir=None, recommend=False, llm_mode
     else:
         row = json.loads(raw_input)
 
+    # Capture the keys the user actually provided — before auto-computation adds engineered columns.
+    # Used later to filter user_row for the LLM prompt so it only sees real signal, not 60+ defaults.
+    user_provided_keys = set(row.keys())
+
     # Warn on unknown keys before auto-computation adds its own keys to row
     all_feature_cols = set(feature_meta["cat_cols"]) | set(feature_meta["num_cols"])
     unknown_keys = set(row.keys()) - all_feature_cols
@@ -301,9 +305,9 @@ def load_and_predict(prefix, raw_input, data_dir=None, recommend=False, llm_mode
         if not top_importances:
             print("Note: saved model has no feature importances (saved before Ph9) — "
                   "re-run with --save_model to persist them for richer recommendations.")
-        # Filter out auto-computed keys added before the warning check
+        # Only pass the keys the user actually typed — not auto-computed defaults or 60+ zero-fills
         user_row = {k: v for k, v in row.items()
-                    if k in set(cat_cols) | set(num_cols)}
+                    if k in user_provided_keys and k in (set(cat_cols) | set(num_cols))}
         get_recommendation(target_col, task_type, prediction_str, user_row, top_importances,
                            llm_model=llm_model)
 

@@ -7,7 +7,7 @@
 ## Contents
 1. [What This System Does](#1-what-this-system-does)
 2. [How It Works — End to End](#2-how-it-works--end-to-end)
-3. [Evaluation Results — All 6 Targets](#3-evaluation-results--all-6-targets)
+3. [Evaluation Results — Core 6 Targets](#3-evaluation-results--core-6-targets)
 4. [Feature Importance Findings](#4-feature-importance-findings)
 5. [Worked Examples](#5-worked-examples)
 6. [Caveats and Known Limitations](#6-caveats-and-known-limitations)
@@ -137,7 +137,7 @@ Classification targets are label-encoded and decoded back to readable names in o
 
 ---
 
-### Step 4: Feature Importance (`nn/estimator.py`, 404 lines)
+### Step 4: Feature Importance (`nn/estimator.py`, 538 lines)
 
 Permutation importance on the held-out validation set:
 
@@ -152,9 +152,10 @@ importance(feature_i) = mean over 3 shuffles of:
 
 ---
 
-## 3. Evaluation Results — All 6 Targets
+## 3. Evaluation Results — Core 6 Targets
 
 All results from 30-epoch runs on CUDA. Evaluation charts saved as `eval_{target}.png`.
+Full suite of 11 key targets available via `python nn/evaluate.py --all`.
 
 ---
 
@@ -425,6 +426,15 @@ python nn/estimator.py --target has_refund --epochs 30 --subset "product_type=Ho
 python nn/estimator.py \
   --predict '{"price": 149.0, "collection": "Core", "product_type": "Hoodie"}' \
   --load_model models/total_price
+
+# Predict + LLM business recommendation (requires OPENROUTER_API_KEY)
+python nn/estimator.py \
+  --predict '{"price": 149.0, "product_type": "Hoodie"}' \
+  --load_model models/has_refund \
+  --recommend
+
+# Train on a data slice
+python nn/estimator.py --target has_refund --epochs 30 --subset "product_type=Hoodie"
 ```
 
 ### Run evaluation
@@ -433,7 +443,7 @@ python nn/estimator.py \
 # Single target — full metrics + plots
 python nn/evaluate.py --target has_refund --epochs 30 --plot
 
-# All 6 key targets at once
+# All 11 key targets at once
 python nn/evaluate.py --all --epochs 30 --plot
 ```
 
@@ -454,6 +464,11 @@ python validate.py data/
 | `product_type` | classification | Accuracy | **1.000** | +46 pp vs 54% baseline |
 | `resolved_by` | classification | Accuracy | **1.000** | +2 pp vs 98% baseline |
 | `resolution_time_minutes` | regression | RMSE | 315 min | 33% better than naive 473 min |
+| `damaged_in_transit` | binary | AUC | **0.829** | refund rows only; `variant_return_rate` top signal |
+| `size_issue` | binary | AUC | ~0.75 | refund rows only (10,025) |
+| `delivery_delay_days` | regression | RMSE | — | supplier chain; run `--target delivery_delay_days` |
+| `variant_return_rate` | regression | RMSE | — | inventory health signal |
+| `city` | classification | Accuracy | — | 20+ UK cities |
 
 ### Output files
 

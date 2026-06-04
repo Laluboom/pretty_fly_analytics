@@ -4,7 +4,7 @@ evaluate.py — Comprehensive evaluation for any trained PrettyFlyNet target.
 Usage:
     python nn/evaluate.py --target has_refund --epochs 30
     python nn/evaluate.py --target total_price --epochs 30 --plot
-    python nn/evaluate.py --all --epochs 20        # run all 6 key targets
+    python nn/evaluate.py --all --epochs 20        # run all 11 key targets
 """
 
 import argparse
@@ -346,13 +346,22 @@ def make_plots(target_col, task_type, preds, targets, ranked, metrics, target_en
 # ---------------------------------------------------------------------------
 
 KEY_TARGETS = [
+    # Original targets
     ("has_refund",              512),
     ("satisfaction_rating",      64),
     ("total_price",             512),
     ("product_type",            512),
     ("resolved_by",             512),
     ("resolution_time_minutes", 512),
+    # Phase 8/10 targets
+    ("damaged_in_transit",      512),
+    ("size_issue",              512),
+    ("delivery_delay_days",     512),
+    ("variant_return_rate",     512),
+    ("city",                    512),
 ]
+
+_KEY_TARGET_BATCH = {col: bs for col, bs in KEY_TARGETS}
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +415,7 @@ def run_target(df, target_col, epochs, batch_size, plot):
 def main():
     parser = argparse.ArgumentParser(description="Comprehensive evaluation for PrettyFlyNet")
     parser.add_argument("--target",  type=str, default=None, help="Single target column to evaluate")
-    parser.add_argument("--all",     action="store_true",    help="Evaluate all 6 key targets")
+    parser.add_argument("--all",     action="store_true",    help="Evaluate all 11 key targets")
     parser.add_argument("--epochs",  type=int, default=30,   help="Training epochs (default: 30)")
     parser.add_argument("--plot",    action="store_true",    help="Save evaluation plots")
     parser.add_argument("--data_dir",type=str, default=None)
@@ -430,9 +439,8 @@ def main():
             print(f"  {r['target']:<30} {r['task_type']:<16} {r['metric_name']:<14} {r['val_metric']:>8.4f}")
 
     elif args.target:
-        run_target(df, args.target, args.epochs,
-                   64 if args.target == "satisfaction_rating" else 512,
-                   args.plot)
+        batch_size = _KEY_TARGET_BATCH.get(args.target, 512)
+        run_target(df, args.target, args.epochs, batch_size, args.plot)
     else:
         print("Provide --target <col> or --all")
         sys.exit(1)
