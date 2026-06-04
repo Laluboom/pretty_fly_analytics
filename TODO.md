@@ -410,6 +410,100 @@ python nn/estimator.py --target has_refund --epochs 30 --subset "product_type=Sw
 
 ---
 
+## Phase 10 — Sentiment Analysis of Customer Messages (VADER)
+
+> Score the actual text of customer support messages to produce per-ticket sentiment features. Uses VADER — free, local, no API, runs in milliseconds. Primary goal: fix `satisfaction_rating` (currently at naive baseline because Phase 8 structural features had zero variance in this dataset).
+
+**Why VADER:** Designed for short informal social-media-style text, exactly like support messages. Returns a compound score from -1.0 (very negative) to +1.0 (very positive). Pure Python, no GPU, no cost.
+
+**Why Phase 8.6 didn't fix satisfaction_rating:** We counted messages and timed responses, but never read the words. `n_escalations` = 0 for every ticket and `response_time` = 120s for every ticket in this dataset — zero variance, zero signal. Sentiment scoring reads the actual text and will produce real variance.
+
+---
+
+### 10.1 Install VADER
+
+- [ ] Add `vaderSentiment` to `requirements_nn.txt`
+- [ ] Confirm install: `python -c "from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer"`
+
+---
+
+### 10.2 Add `_load_support_sentiment_features()` to `nn/data_builder.py`
+
+- [ ] Load `support_messages.json` (already done in `_load_support_message_features` — share the parse logic or call it separately)
+- [ ] Initialise one `SentimentIntensityAnalyzer()` instance (reuse across all messages — it's stateless)
+- [ ] For each ticket, score **customer messages only** (skip bot/human agent messages — we want the customer's tone, not the bot's)
+- [ ] Compute per-ticket features:
+  - `avg_sentiment` — mean compound score across all customer messages in the thread (−1 to +1)
+  - `min_sentiment` — lowest (most negative) single customer message score (catches peak frustration)
+  - `pct_negative_msgs` — fraction of customer messages with compound < −0.05 (VADER's negativity threshold)
+- [ ] Build a DataFrame with `ticket_id` + 3 sentiment cols
+- [ ] Join to `support_tickets.csv` on `ticket_id` → get `order_id`
+- [ ] Return DataFrame keyed by `order_id`
+
+**Example:**
+```python
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+sia = SentimentIntensityAnalyzer()
+score = sia.polarity_scores("This is absolutely awful!!")["compound"]  # → -0.8402
+```
+
+---
+
+### 10.3 Join into master table in `_build_joined()`
+
+- [ ] Add `sentiment_features` parameter to `_build_joined()` signature
+- [ ] LEFT JOIN on `order_id` after the support_tickets join (same position as `support_message_features`)
+- [ ] Fill NaN with 0 for orders with no ticket (neutrality — no message means no signal either way)
+- [ ] New columns are numeric — no change to `CATEGORICAL_COLS`
+- [ ] Add to `FILTER_MAP`:
+  - `"avg_sentiment": ("has_ticket", 1)` — only meaningful for ticket orders
+  - `"min_sentiment": ("has_ticket", 1)`
+  - `"pct_negative_msgs": ("has_ticket", 1)`
+- [ ] Wire into `build_feature_table()` — call `_load_support_sentiment_features()` alongside the other new loaders
+
+---
+
+### 10.4 Update `load_and_predict()` in `nn/estimator.py`
+
+- [ ] The 3 sentiment features will be in the saved model's `feature_meta.num_cols` after retraining
+- [ ] No user-facing change needed — missing sentiment fields default to 0 at inference (neutral sentiment assumed for orders without a support thread)
+
+---
+
+### 10.5 Validate
+
+```bash
+# Check features appear in the table
+python3 -c "
+from nn.data_builder import build_feature_table
+df = build_feature_table()
+print(df[['avg_sentiment','min_sentiment','pct_negative_msgs']].describe().round(3))
+rated = df.dropna(subset=['satisfaction_rating'])
+print('Correlations with satisfaction_rating:')
+print(rated[['avg_sentiment','min_sentiment','pct_negative_msgs','satisfaction_rating']].corr()['satisfaction_rating'].round(3))
+"
+
+# Retrain satisfaction_rating — expect RMSE meaningfully below 1.17 (current naive baseline)
+python nn/estimator.py --target satisfaction_rating --epochs 30
+
+# Confirm avg_sentiment and min_sentiment appear in top 5 importances
+# Confirm no regression on has_refund (AUC should stay ≥ 0.84)
+python nn/estimator.py --target has_refund --epochs 30
+```
+
+**Success criteria:**
+- `avg_sentiment` and `min_sentiment` have non-trivial correlation (|r| > 0.1) with `satisfaction_rating`
+- `satisfaction_rating` RMSE drops below 1.10 (below naive baseline of 1.15)
+- `avg_sentiment` appears in top 5 feature importances for `satisfaction_rating`
+
+**Files to change:**
+- `requirements_nn.txt` — add `vaderSentiment`
+- `nn/data_builder.py` — add `_load_support_sentiment_features()`, update `_build_joined()`, `FILTER_MAP`, `build_feature_table()`
+
+**Effort:** ~30 min
+
+---
+
 ## Quick Reference: Key Column Names per File
 
 | File | Target-worthy columns |
@@ -548,3 +642,4 @@ Findings from code inspection + live evaluation runs. Each item has a root cause
 | 10 | **M4** — Cross-val for sparse targets | 30 min | Reliable satisfaction metrics | ✅ DONE |
 | 11 | **Ph7** — `--subset` flag for per-product filtering | 20 min | Slice training by product type | ⬜ TODO |
 | 12 | **Ph9** — LLM recommendation layer on `--predict` | 90 min | Actionable business output | ⬜ TODO |
+| 13 | **Ph10** — VADER sentiment on customer messages | 30 min | Actually fix satisfaction_rating | ⬜ TODO |
