@@ -21,6 +21,10 @@ models/
 # Generated charts
 *.png
 
+# Personal reference files
+baby_guide.md
+pretty_fly_master.csv
+
 # Jupyter
 .ipynb_checkpoints/
 
