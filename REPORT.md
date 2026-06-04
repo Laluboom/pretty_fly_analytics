@@ -82,7 +82,7 @@ line_items (69,956 rows)
 - 57 numeric columns → `StandardScaler` (zero mean, unit variance)
 
 **Data quality controls:**
-- `LEAKAGE_MAP`: 7 entries — drops columns that directly encode the target before training
+- `LEAKAGE_MAP`: 6 entries — drops columns that directly encode the target before training
 - `FILTER_MAP`: 10 entries — restricts to meaningful rows per target (e.g. `resolution_time_minutes` trains only on the 1,705 rows that have a ticket)
 
 ---

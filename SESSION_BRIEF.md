@@ -97,7 +97,7 @@ line_items → orders → variants → products → customers
 
 **Engineered features:** `discount_pct`, `gross_margin_est`, `order_month/dayofweek/hour`, `is_discounted`, `total_ad_spend`, `total_ad_conversions`, `price_components_sum`, `damaged_in_transit`, `size_issue`
 
-**Leakage protection (`LEAKAGE_MAP`):** 7 entries — drops columns that encode the target before training
+**Leakage protection (`LEAKAGE_MAP`):** 6 entries — drops columns that encode the target before training
 **Row filtering (`FILTER_MAP`):** 10 entries — restricts to meaningful rows per target (e.g. `has_refund==1` for damage targets)
 **Inference:** `load_and_predict()` auto-computes all engineered features; unknown keys warned before auto-computation; sentiment features default to 0 (neutral = no support thread)
 
