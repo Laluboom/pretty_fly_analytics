@@ -1,0 +1,78 @@
+{
+  "date": "2026-09-17",
+  "tier": "01_active_projects",
+  "selected_by": "daily routine, weighted random",
+  "files_inspected": [
+    "nn/data_builder.py",
+    "nn/model.py",
+    "nn/estimator.py",
+    "nn/evaluate.py",
+    "validate.py",
+    "README.md",
+    "REPORT.md",
+    "TODO.md",
+    "requirements.txt",
+    "requirements_nn.txt",
+    ".gitignore",
+    ".env.example",
+    "data/refunds.csv",
+    "data/line_items.csv",
+    "data/support_tickets.csv",
+    "data/addresses.csv",
+    "data/po_line_items.csv"
+  ],
+  "issues_confirmed": [
+    {
+      "id": "leak-derived-refund-flags",
+      "severity": "critical",
+      "where": "nn/data_builder.py:452 (LEAKAGE_MAP) vs nn/data_builder.py:423-424",
+      "detail": "LEAKAGE_MAP['has_refund'] drops refund_reason but not size_issue / damaged_in_transit, which _engineer_features builds as pure functions of refund_reason. refund_reason is 'none' on every non-refunded row, so size_issue==1 implies has_refund==1. REPORT.md:180 lists those two flags as the #1 and #2 features; REPORT.md:170 reports recall 0.5461 and size/damage reasons are 53.8% of refunds (3145/5843, counted from data/refunds.csv); REPORT.md:169 reports precision 0.9936 with 7 false positives. The 'leakage-free' AUC 0.8436 at REPORT.md:461 is inflated."
+    },
+    {
+      "id": "refund-label-grain",
+      "severity": "high",
+      "where": "nn/data_builder.py:68-69 and nn/data_builder.py:356",
+      "detail": "_load_refunds parses refund_line_items into refund_variant_ids on line 68 and discards the column on line 69, then merges refunds on order_id onto a line-item-grain table. Counted from the CSVs: 5843 refunds each covering exactly 1 line item, spread across orders containing 10025 line items, so 4182 rows (41.7% of positives) are mislabelled. Matches REPORT.md:174 'Positive rate (actual) 14.33%' = 10025/69956; true line-item rate is 8.35%. Also inflates the damaged_in_transit / size_issue training sets via FILTER_MAP (nn/data_builder.py:466-476, REPORT.md:468)."
+    },
+    {
+      "id": "stale-val-metrics",
+      "severity": "high",
+      "where": "nn/model.py:174, 212, 215-226; consumed by nn/evaluate.py:378-391",
+      "detail": "best_weights is restored at model.py:212 but all_preds/all_targets still hold the final epoch's predictions (reassigned each epoch at model.py:174). Every metric in REPORT.md section 3 therefore describes the discarded final-epoch model while --save_model persists the best checkpoint. With patience=5 the gap is five epochs."
+    },
+    {
+      "id": "nan-crashes-early-stop",
+      "severity": "medium",
+      "where": "nn/model.py:202-212",
+      "detail": "If val_loss is NaN on epoch 1, 'inf - nan > min_delta' is False, best_weights stays None, and model.load_state_dict(None) raises a bare AttributeError after patience is exhausted."
+    },
+    {
+      "id": "silent-oov-categoricals",
+      "severity": "medium",
+      "where": "nn/estimator.py:261-264",
+      "detail": "At --predict time an unseen categorical value falls back to encoder index 0, the alphabetically first real class, with no warning. The unknown-key warning at estimator.py:233 covers a different failure. nn/model.py:40 already allocates vocab_size+1 embedding rows, so a reserved OOV slot exists and is never used."
+    },
+    {
+      "id": "unpinned-deps-with-pickled-sklearn",
+      "severity": "low",
+      "where": "requirements_nn.txt (8 bare names); nn/estimator.py:189-190",
+      "detail": "No version pins anywhere, while save_model pickles live sklearn LabelEncoder and StandardScaler objects into the .pkl. A minor sklearn bump silently invalidates every saved model."
+    },
+    {
+      "id": "no-tests",
+      "severity": "medium",
+      "where": "repo root",
+      "detail": "No test files exist. validate.py is the vendor dataset reconciler (20 reconciliation rules over the CSVs), not a test of anything in nn/."
+    }
+  ],
+  "browser_checked": false,
+  "proposed_tasks": [
+    "[BUG] Add size_issue and damaged_in_transit to LEAKAGE_MAP['has_refund'] and cross-drop them from each other; re-run evaluate and correct REPORT.md",
+    "[BUG] Label refunds at line-item grain using the already-parsed refund_variant_ids instead of broadcasting the order-level flag",
+    "[BUG] Recompute val metrics from the restored best checkpoint instead of the final epoch's predictions; guard best_weights=None",
+    "[QUICK WIN ~15min] Warn on unseen categorical values at --predict time (nn/estimator.py:261-264)",
+    "[TEST] Add one test file asserting has_refund positive count == 5843 and that no surviving feature is a deterministic function of the target"
+  ],
+  "verdict": "Well-built and genuinely working, but the headline result is not what it claims: has_refund still leaks through two flags derived from the very column LEAKAGE_MAP drops, and refund labels are order-grain on a line-item table. Code quality is high; the numbers in REPORT.md are not trustworthy until items 1-3 are fixed.",
+  "next_review": "2026-09-27"
+}
