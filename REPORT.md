@@ -159,9 +159,18 @@ Full suite of 11 key targets available via `python nn/evaluate.py --all`.
 
 ---
 
-### 3.1 `has_refund` — Binary Classification (leakage-free)
+### 3.1 `has_refund` — Binary Classification (⚠️ PENDING RE-RUN — see note)
 
 > **Business question:** Which orders are likely to be refunded?
+
+> **⚠️ Not leakage-free.** `size_issue` and `damaged_in_transit` are pure functions of
+> `refund_reason` (dropped) but were missing from `LEAKAGE_MAP["has_refund"]`, so every
+> number below was trained with those two columns still present. `LEAKAGE_MAP` has now
+> been fixed (`nn/data_builder.py`), but re-running `python nn/evaluate.py --target
+> has_refund --epochs 30` to get the honest numbers requires ML dependencies
+> (`torch`, `scikit-learn`, …) that could not be installed in the environment this fix
+> was made in — no network/package-install access. The figures below are the **stale,
+> leaky** numbers and must be replaced with a real re-run before being cited again.
 
 | Metric | Value |
 |--------|-------|
@@ -458,7 +467,7 @@ python validate.py data/
 
 | Target | Task | Metric | Score | vs Naive |
 |--------|------|--------|-------|---------|
-| `has_refund` | binary | AUC | **0.844** | leakage-free (prev. fake 1.000) |
+| `has_refund` | binary | AUC | **0.844** ⚠️ | STALE — leaked via `size_issue`/`damaged_in_transit`, needs re-run (see §3.1) |
 | `satisfaction_rating` | regression | RMSE | 1.213 | ≈ naive 1.175 — data limitation |
 | `total_price` | regression | RMSE | **£4.86** | 96% better than naive £113 |
 | `product_type` | classification | Accuracy | **1.000** | +46 pp vs 54% baseline |
