@@ -8,8 +8,9 @@ joined feature table and it trains a PyTorch MLP to predict that column from all
 others, then reports permutation importance and — optionally — an LLM-written business
 recommendation.
 
-Built during the hackathon; last code commit 5 June 2026. Nothing has been committed
-since, so treat it as a finished, working demo rather than an actively evolving system.
+Built during the hackathon; last source commit 5 June 2026. Nothing has been committed
+since except review notes, so treat it as a finished, working demo rather than an
+actively evolving system.
 
 ## Layout
 
@@ -45,22 +46,28 @@ Full flag-by-flag walkthrough in `HOW_TO_USE.md`.
 
 ## Current state — read this before trusting any number
 
-`REPORT.md` presents metrics for 11 targets. Three verified defects mean several of
-them are wrong, in the optimistic direction:
+`REPORT.md` presents metrics for 11 targets. Four verified defects mean several are
+wrong, all in the optimistic direction:
 
-- **`has_refund` is not leakage-free.** `size_issue` and `damaged_in_transit` are
-  derived from `refund_reason` (`nn/data_builder.py:423-424`) but are not dropped by
-  `LEAKAGE_MAP` (`nn/data_builder.py:452`). The quoted AUC 0.8436 is inflated.
-- **Refund labels are order-grain on a line-item table** (`nn/data_builder.py:69, 356`).
-  10,025 rows are marked refunded; only 5,843 line items actually were.
+- **Target leakage, twice.** `LEAKAGE_MAP` (`nn/data_builder.py:451`) is hand-maintained
+  and has drifted. `has_refund` still sees `size_issue` / `damaged_in_transit`, both pure
+  functions of the dropped `refund_reason` (`:423-424`) — the quoted AUC 0.8436 is
+  inflated. `has_ticket` sees the three Phase 10 sentiment columns (`:377-380`), which are
+  non-zero on 100% of positives and exactly 0 on every negative — a perfect leak.
+- **Refund labels are order-grain on a line-item table** (`:69`, `:356`). 10,025 rows are
+  marked refunded; only 5,843 line items were. 41.7% of positives are wrong.
 - **Reported metrics use the final-epoch model, not the restored best checkpoint**
-  (`nn/model.py:212` vs `215-226`), so printed scores don't match saved models.
+  (`nn/model.py:212` vs `215-226`), so printed scores describe a different model than
+  `--save_model` writes to disk.
+- **`--target quantity` crashes** after a full training run: the column is constant
+  (all 69,956 rows are `1`), so it is typed binary-with-one-class and `roc_auc_score`
+  raises (`nn/model.py:219`).
 
 Details, evidence and fixes in `TODO.md`. `REPORT.md`, `SESSION_BRIEF.md` and
 `README_nn.md` all pre-date this review and still quote the affected figures.
 
-No test suite. Dependencies are unpinned, which matters because saved models pickle
-live sklearn `LabelEncoder`/`StandardScaler` objects (`nn/estimator.py:189`).
+No test suite. Dependencies are unpinned, which matters because saved models pickle live
+sklearn `LabelEncoder` / `StandardScaler` objects (`nn/estimator.py:189`).
 
 `models/`, generated `*.png`, `.env`, `baby_guide.md` and `pretty_fly_master.csv` are
 gitignored and not in the repo.
