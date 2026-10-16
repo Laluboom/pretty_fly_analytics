@@ -449,14 +449,18 @@ CATEGORICAL_COLS = [
 
 # B1: columns that directly encode the target — drop before training to prevent leakage.
 LEAKAGE_MAP = {
-    "has_refund":               ["financial_status", "refund_reason", "refund_amount"],
+    "has_refund":               ["financial_status", "refund_reason", "refund_amount",
+                                 "size_issue", "damaged_in_transit"],
     "has_ticket":               ["ticket_category", "resolved_by", "resolution_time_minutes",
                                  "satisfaction_rating", "support_channel",
                                  "msg_count", "customer_msg_count", "avg_customer_msg_length",
-                                 "n_escalations", "response_time_first_seconds"],
+                                 "n_escalations", "response_time_first_seconds",
+                                 "avg_sentiment", "min_sentiment", "pct_negative_msgs"],
     # satisfaction_rating: message features are the SIGNAL we want — do NOT drop them
-    "damaged_in_transit":       ["refund_reason", "refund_amount", "has_refund", "financial_status"],
-    "size_issue":               ["refund_reason", "refund_amount", "has_refund", "financial_status"],
+    "damaged_in_transit":       ["refund_reason", "refund_amount", "has_refund", "financial_status",
+                                 "size_issue"],
+    "size_issue":               ["refund_reason", "refund_amount", "has_refund", "financial_status",
+                                 "damaged_in_transit"],
     "landed_cost_per_unit_gbp": ["gross_margin_est"],
     "variant_price":            ["price", "gross_margin_est"],
 }

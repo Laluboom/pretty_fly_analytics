@@ -11,7 +11,7 @@ Ranked, best first. Reviewed 2026-09-28.
 
 ---
 
-## 1. [BUG] `LEAKAGE_MAP` is a hand-maintained list and it has now drifted twice
+## 1. `[DONE 2026-09-28]` `LEAKAGE_MAP` is a hand-maintained list and it has now drifted twice
 
 `LEAKAGE_MAP` (`nn/data_builder.py:451-462`) is the only thing standing between this
 project and meaningless scores. It is updated by hand, and it has been missed twice —
