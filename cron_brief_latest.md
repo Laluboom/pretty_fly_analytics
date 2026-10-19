@@ -1,78 +1,104 @@
-# Daily review — pretty_fly_analytics — 2026-09-28
+# Daily review — pretty_fly_analytics (2026-10-19)
 
 ## What I looked at
 
-`nn/data_builder.py`, `nn/model.py`, `nn/estimator.py` and `nn/evaluate.py` in full,
-`REPORT.md` for the published figures, and the raw CSVs in `data/` to check the numbers
-rather than accept them. Not a web project, so no browser check. None of the project's
-dependencies (pandas, torch, sklearn, vaderSentiment, matplotlib, openai) are installed
-in this environment, so I could not run the pipeline — every figure below was recounted
-from the raw CSVs with the stdlib, and every code claim is anchored to a line.
+30 commits of history, the four `nn/` source files end to end (1,847 lines), `REPORT.md`
+in full, and the previous two reviews' `TODO.md`. Then I recounted every data claim
+against the CSVs directly — `line_items`, `refunds`, `support_tickets`,
+`support_messages.json`, `products`, `variants`, `addresses`, `customers`, `orders`,
+`po_line_items`. No browser check: this is a CLI/ML project, nothing to serve.
 
-First thing worth saying: **nothing from the 2026-09-17 review was implemented.** No
-source file has changed since `b7e9099` on 5 June. I re-derived the three carried-over
-findings independently rather than trusting the previous run, and all three hold — the
-refund figures (5,843 / 10,025 / 41.7%) and the 53.8% size-and-damage share came out
-identical on a fresh count.
+**I could not train anything.** `/usr/bin/python3` has no `pip` and no working
+`ensurepip`, so `torch`/`pandas`/`sklearn` are unavailable. All verification below is
+from reading code plus stdlib `csv`/`json` recounts. That constraint is itself a finding
+— it's exactly why the last doer run (`43f7423`) landed a correct code fix but left the
+`REPORT.md` figure flagged instead of corrected.
 
-## The main finding — the leakage map has drifted a second time
+## Good news first
 
-`LEAKAGE_MAP` (`nn/data_builder.py:451`) is the single thing keeping this project's
-scores meaningful, and it is maintained entirely by hand. It has now been missed twice,
-both times because a *new* feature turned out to be a function of an *existing* target.
+The 2026-09-28 top item actually got done and merged (PR #1). I verified it by reading
+`LEAKAGE_MAP` rather than trusting the commit message: the three sentiment columns are in
+`has_ticket`, and `size_issue`/`damaged_in_transit` are cross-dropped for `has_refund`
+(`nn/data_builder.py:451-466`). Items 2, 3 and 5 from that list are untouched and I've
+re-confirmed all three.
 
-The new one is `has_ticket`. The three Phase 10 sentiment columns — `avg_sentiment`,
-`min_sentiment`, `pct_negative_msgs` — are merged on `order_id` and `fillna(0)` for
-orders with no ticket (`nn/data_builder.py:377-380`). That is structurally identical to
-`msg_count`, which *is* listed in `LEAKAGE_MAP["has_ticket"]`. The sentiment columns are
-not. From the data: 1,204 tickets on 1,204 distinct orders → 1,705 positive line-item
-rows, and **every one of those 1,204 tickets has at least one customer message**, so
-every positive gets a real VADER score while all 68,251 negatives sit at exactly `0.0`.
-`avg_sentiment != 0` implies `has_ticket == 1` across **100%** of the positive class —
-a strictly more complete leak than the `has_refund` one found last time, which only
-covered 53.8%.
+## What I found
 
-`git show ec57f66` nails the mechanism: the Phase 10 commit added the three columns to
-`_build_joined` **and** added three entries to `FILTER_MAP` — and did not touch
-`LEAKAGE_MAP` at all. The author remembered one map and forgot the other. Mitigating
-factor: `has_ticket` is not in `KEY_TARGETS`, so no published number is wrong. But
-`--target has_ticket` is a supported call that will hand back a near-1.0 AUC meaning
-nothing.
+**The hand-maintained-map problem has recurred a third time, and this time it's worse
+than "a column was missed."** `LEAKAGE_MAP` is keyed by target and has 6 keys;
+`KEY_TARGETS` publishes 11. So 7 published targets get no leakage handling whatsoever.
+Three of them are one-column lookups:
 
-That is why item 4 is a test rather than more documentation. Patching the map a third
-time fixes today's balance and nothing else; a structural assertion — for every
-`LEAKAGE_MAP` key, fail if any surviving feature is a deterministic function of the
-target — fails on both known leaks today and catches the Phase 11 version automatically.
+- **`resolved_by`, Accuracy 1.0000** is `resolution_time_minutes` read back. Bot-resolved
+  tickets take 5–29 minutes, human-resolved take 60–1439. Zero overlap — a single
+  threshold at 29 gives 100%. `msg_count` and `customer_msg_count` are independent perfect
+  separators too, since the transcripts have only two shapes.
+- **`resolution_time_minutes`, RMSE 315, "33% better than naive 473"** is the same leak in
+  reverse. Just predicting the group mean of `resolved_by` (bot 16.9 min, human 756.5)
+  gives RMSE **304** — better than the model. The entire headline improvement is that one
+  column.
+- **`product_type`, Accuracy 1.0000** is `weight_grams`, which has exactly 6 distinct
+  values across all 645 variants, one per product type: 120g→Cap, 280g→Tee,
+  520g→Sweatpants, 650g→Hoodie, 850g→Trainer, 900g→Outerwear. A literal lookup table.
+- **`city`** is `postcode_district` — all 40 districts map to exactly one of 11 cities.
+  No number is published yet, but it's a documented `--all` target that will return 1.000.
 
-## What else I'm proposing
+What makes this more than a map-maintenance chore is that **`REPORT.md` explains two of
+these perfect scores with the wrong mechanism.** §3.5 states "the channel a customer
+contacts through almost perfectly determines who handles them." It doesn't:
+`support_channel` → `resolved_by` is 58.14% by majority vote, which is *exactly* the naive
+baseline (chat 251h/168b, email 356h/259b, instagram 93h/77b). `support_channel` tops the
+permutation ranking only because it's `"none"` on 97.56% of rows — the ranking is measuring
+"is this row a ticket at all," and the report reads it as business insight. §3.4 similarly
+credits `supplier_country` and margin for `product_type` when the mechanism is weight.
+§3.6 even *notices* that `resolved_by` and `resolution_time_minutes` are "mutually
+predictive… each the strongest predictor of the other" and files it as a finding rather
+than a leak.
 
-Items 2 and 3 are carried over unchanged because they are still real and still the
-highest-value things after the leakage. Refund labels are applied at order grain to a
-line-item table (`nn/data_builder.py:69`, `:356`) — the code parses exactly the column
-it needs and discards it one line later, leaving 4,182 rows, 41.7% of positives,
-mislabelled. And every metric in `REPORT.md` §3 describes the final-epoch model rather
-than the restored best checkpoint (`nn/model.py:212` vs `215-226`), so the printed
-number and the artefact `--save_model` writes are different models.
+I also re-verified the two carried bugs and found the previous review's proposed test
+assertion was off. The refund grain bug is real — 4,182 rows (41.7% of positives)
+mislabelled, true line-item rate 8.36% not the published 14.33%. But the correct positive
+count is **5,850, not 5,843**: 7 orders contain the refunded variant twice. The
+2026-09-28 TODO proposed asserting 5,843, which would have failed by 7. Good news on
+feasibility though — every refund's variant does appear in its order's line items (0
+misses in 5,843), so the fix joins cleanly.
 
-The quick win is new and small: `--target quantity` trains a complete model and *then*
-crashes. `quantity` is constant — all 69,956 line items are `1` — so `get_X_y`
-(`:532`) types it as binary-with-one-class via the `issubset({0,1,True,False})` branch,
-and `roc_auc_score` (`nn/model.py:219`) dies with a bare sklearn `ValueError`. It is not
-an obscure column: `_business_line` (`nn/estimator.py:122`) advertises it as a headline
-target. A `nunique() < 2` guard in `prepare_for_target` turns a wasted training run into
-an instant message.
+Finally, a small one with a nice root cause. `n_escalations` is identically zero on all
+69,956 rows: the rule looks for a `bot` message followed by a `human` one, but the senders
+in the JSON are `customer`, `bot` and **`agent`** — there is no `human`. Renaming it won't
+help either, because the only two conversation shapes are
+`customer|bot|customer|agent|customer` and `customer|bot|customer`, so `bot` is never
+adjacent to `agent`. And redefining escalation as "an agent replied at all" would give you
+exactly `resolved_by == "human"` — a fresh perfect leak. Best left dead; it just shouldn't
+crash.
 
-Two verified runners-up I left out of the top five and recorded at the bottom of
-`TODO.md`: `--predict` defaults missing numerics to raw `0.0` before scaling
-(`nn/estimator.py:270`), which puts them 1.3–1.9 standard deviations from the mean
-instead of at it — the documented example supplies 3 of ~56 numeric features, so ~53
-arrive out of distribution; and the encoders and scaler are fit on the full table before
-the train/val split.
+## What I'm proposing
+
+Ranked in `TODO.md`. The shape of it: **stop publishing the numbers, then add the test
+that stops this recurring** — not build Phase 11.
+
+1. **[BUG]** Add the four missing `LEAKAGE_MAP` keys plus `FILTER_MAP["resolved_by"]` and
+   `["customer_msg_count"]`; withdraw the §3.4/§3.5/§3.6 figures the way §3.1 already was;
+   rewrite the two wrong interpretation paragraphs. ~50 min, no training needed — which is
+   the point, given the env.
+2. **[TEST]** The structural leakage test. Not a hardcoded list of today's leaks, which
+   would just restate the bug: a target-agnostic near-determinism assertion over every
+   `KEY_TARGET`, plus the `has_refund.sum() == 5850` grain guard and a zero-variance guard
+   on `num_cols`. It fails today on four targets, would have caught `43f7423`, and catches
+   the next drift for free. This is the answer to "which single test would have helped."
+3. **[QUICK WIN ~15min]** Guard `nunique() < 2` in `prepare_for_target` so `quantity` and
+   `n_escalations` fail instantly rather than after a full training run.
+4. **[BUG]** Label refunds at variant grain, target 5,850 positives.
+5. **[BUG]** The reported metric comes from weights the run discarded (`nn/model.py:174`
+   vs `:212`), so the printed score, the importance ranking and the saved artefact describe
+   three different models. 30 minutes, and it affects all 11 numbers — it should land
+   before any re-run.
 
 ## Verdict
 
-The engineering is good — clean module boundaries, thoughtful `FILTER_MAP`/`LEAKAGE_MAP`
-design, honest baselines in the metric suites. The problem is that the guardrail is
-manual, and it has now failed twice in the same way. Fix the two leaks, fix the grain,
-then write the test that makes the third drift impossible. Until then `REPORT.md` should
-be read as a demo artefact, not a result.
+Clean, genuinely well-built code whose published results are mostly artifacts. The
+engineering isn't the problem; the write-up is. Two things need Visesh: a machine with the
+deps so the re-runs can actually happen, and a call on whether `REPORT.md` is still a
+document anyone relies on — if it is, items 1 and 5 are urgent; if it's a hackathon
+souvenir, item 2 plus honest caveats is enough and this repo should drop out of the active
+tier.

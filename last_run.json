@@ -1,5 +1,5 @@
 {
-  "date": "2026-09-28",
+  "date": "2026-10-19",
   "tier": "01_active_projects",
   "selected_by": "daily routine, weighted random",
   "files_inspected": [
@@ -8,102 +8,53 @@
     "nn/estimator.py",
     "nn/evaluate.py",
     "REPORT.md",
-    "REFERENCE.md",
     "TODO.md",
-    "last_run.json",
-    "requirements.txt",
+    "REFERENCE.md",
     "requirements_nn.txt",
+    "requirements.txt",
+    ".env.example",
     "data/line_items.csv",
-    "data/orders.csv",
     "data/refunds.csv",
     "data/support_tickets.csv",
     "data/support_messages.json",
+    "data/products.csv",
     "data/variants.csv",
+    "data/addresses.csv",
     "data/customers.csv",
-    "git log / git show ec57f66 / git log -S on nn/data_builder.py"
+    "data/orders.csv",
+    "data/po_line_items.csv",
+    "data/discount_codes.csv",
+    "git log --oneline -30",
+    "git log -5 --stat"
   ],
   "issues_confirmed": [
-    {
-      "id": "leak-sentiment-into-has-ticket",
-      "severity": "critical",
-      "new_this_review": true,
-      "where": "nn/data_builder.py:453-456 (LEAKAGE_MAP['has_ticket']) vs nn/data_builder.py:377-380",
-      "detail": "avg_sentiment, min_sentiment and pct_negative_msgs are merged on order_id and fillna(0) for orders with no ticket - structurally identical to msg_count, which IS dropped by LEAKAGE_MAP['has_ticket']. The three sentiment columns are not. Counted from the data: 1204 tickets on 1204 distinct orders covering 1705 line-item rows, and all 1204 tickets have at least one customer message, so every positive row gets a real VADER score and all 68251 negatives are exactly 0.0. avg_sentiment != 0 implies has_ticket == 1 over 100% of the positive class. git show ec57f66 confirms the mechanism: the Phase 10 commit added the three columns to _build_joined and added three entries to FILTER_MAP, but did not touch LEAKAGE_MAP. has_ticket is absent from KEY_TARGETS (nn/evaluate.py:348-362) so no published figure is affected, but --target has_ticket is a supported call."
-    },
-    {
-      "id": "leak-derived-refund-flags",
-      "severity": "critical",
-      "new_this_review": false,
-      "where": "nn/data_builder.py:452 (LEAKAGE_MAP) vs nn/data_builder.py:423-424",
-      "detail": "Carried from 2026-09-17, untouched. LEAKAGE_MAP['has_refund'] drops refund_reason but not size_issue / damaged_in_transit, which _engineer_features builds as pure functions of refund_reason. refund_reason is 'none' on every non-refunded row, so size_issue==1 implies has_refund==1. Recounted from data/refunds.csv this run: size_too_small 1284 + size_too_large 1109 + damaged_in_transit 752 = 3145/5843 = 53.8% of refunds, matching the reported recall 0.5461 (REPORT.md:170). REPORT.md:180 lists those two flags as the #1 (delta 0.794) and #2 (delta 0.278) features. The 'leakage-free' AUC 0.8436 at REPORT.md:461 is inflated."
-    },
-    {
-      "id": "refund-label-grain",
-      "severity": "high",
-      "new_this_review": false,
-      "where": "nn/data_builder.py:68-69 and nn/data_builder.py:356",
-      "detail": "Carried from 2026-09-17, untouched, and independently recounted this run. _load_refunds parses refund_line_items into refund_variant_ids on line 68 and discards the column on line 69, then merges refunds on order_id onto a line-item-grain table. From the CSVs: 5843 refunds, no order refunded twice, every refund_line_items array has length exactly 1, and those orders contain 10025 line items - so 4182 rows (41.7% of positives) are mislabelled. Matches REPORT.md:174 'Positive rate (actual) 14.33%' = 10025/69956; the true line-item rate is 8.35%. Also inflates the damaged_in_transit / size_issue training sets via FILTER_MAP (nn/data_builder.py:466-476, REPORT.md:468)."
-    },
-    {
-      "id": "stale-val-metrics",
-      "severity": "high",
-      "new_this_review": false,
-      "where": "nn/model.py:174, 212, 215-226; consumed by nn/evaluate.py:378-391",
-      "detail": "Carried from 2026-09-17, untouched. best_weights is restored at model.py:212 but all_preds/all_targets still hold the final epoch's predictions (reassigned each epoch at model.py:174). Every metric in REPORT.md section 3 therefore describes the discarded final-epoch model while --save_model (nn/estimator.py:527) persists the best checkpoint. With patience=5 the gap is five epochs."
-    },
-    {
-      "id": "constant-target-crash-quantity",
-      "severity": "medium",
-      "new_this_review": true,
-      "where": "nn/data_builder.py:532 -> nn/model.py:219; advertised at nn/estimator.py:122",
-      "detail": "quantity is constant: all 69956 rows in data/line_items.csv have quantity == 1 (verified). get_X_y tests set(unique).issubset({0,1,True,False}); {1} satisfies it, so quantity is typed as a binary task with one class. Training runs to completion against all-ones, then roc_auc_score at model.py:219 raises a bare 'ValueError: Only one class present in y_true'. quantity is advertised as a headline target by _business_line (nn/estimator.py:122) and appears in --list_targets at 100% non-null. It is also a zero-variance dead feature for every other target."
-    },
-    {
-      "id": "predict-zero-default-numerics",
-      "severity": "medium",
-      "new_this_review": true,
-      "where": "nn/estimator.py:270",
-      "detail": "load_and_predict builds the numeric row with float(row.get(col, 0.0)) and then applies the fitted StandardScaler, so an unspecified feature is treated as a genuine zero rather than as missing. Measured at line-item grain from the CSVs, a raw 0.0 default lands at z = -1.55 (price), -1.90 (weight_grams), -1.43 (orders_count), -1.33 (total_spent). The documented example in REFERENCE.md and HOW_TO_USE.md supplies 3 of roughly 56 numeric features, so about 53 arrive as out-of-distribution values. Defaulting to scaler.mean_[i] would scale to exactly 0."
-    },
-    {
-      "id": "silent-oov-categoricals",
-      "severity": "medium",
-      "new_this_review": false,
-      "where": "nn/estimator.py:261-264",
-      "detail": "Carried from 2026-09-17, untouched. At --predict time an unseen categorical value falls back to encoder index 0, the alphabetically first real class, with no warning. The unknown-key warning at estimator.py:233 covers a different failure. nn/model.py:40 already allocates vocab_size+1 embedding rows, so a reserved OOV slot exists and is never used."
-    },
-    {
-      "id": "preprocessing-fit-before-split",
-      "severity": "low",
-      "new_this_review": true,
-      "where": "nn/data_builder.py:486-501, called at :620, split happens later at nn/model.py:124",
-      "detail": "LabelEncoders, the numeric median imputation and the StandardScaler are all fit on the full table inside _encode_and_scale, before train_model performs the train/val split. Validation rows therefore inform the scaling statistics and the category vocabulary. Mild relative to the leakage items, but the same family of problem."
-    },
-    {
-      "id": "unpinned-deps-with-pickled-sklearn",
-      "severity": "low",
-      "new_this_review": false,
-      "where": "requirements_nn.txt (8 bare names); nn/estimator.py:189-190",
-      "detail": "No version pins anywhere, while save_model pickles live sklearn LabelEncoder and StandardScaler objects into the .pkl. A minor sklearn bump silently invalidates every saved model."
-    },
-    {
-      "id": "no-tests",
-      "severity": "medium",
-      "new_this_review": false,
-      "where": "repo root",
-      "detail": "No test files exist. validate.py is the vendor dataset reconciler (20 reconciliation rules over the raw CSVs), not a test of anything in nn/. A structural leakage test over every LEAKAGE_MAP key would have caught both the has_refund and has_ticket leaks."
-    }
+    "nn/data_builder.py:451-466 — LEAKAGE_MAP has 6 keys but nn/evaluate.py:348-362 publishes 11 KEY_TARGETS; 7 published targets get no leakage handling at all. The 2026-09-28 item 1 fix IS present (sentiment cols in has_ticket, size_issue/damaged_in_transit cross-dropped for has_refund) and was verified by reading the map.",
+    "nn/data_builder.py:451 — no LEAKAGE_MAP['resolved_by'] key, so resolution_time_minutes survives as a feature. Counted from data/support_tickets.csv: bot-resolved resolution_time_minutes in [5,29] (n=504, mean 16.9), human-resolved in [60,1439] (n=700, mean 756.5), zero overlap; a single threshold at 29 gives 100% accuracy. msg_count (values 0/3/5) and customer_msg_count (0/2/3) are independent perfect 3-way separators. This is the whole of the Accuracy 1.0000 at REPORT.md:274.",
+    "REPORT.md:290 — states 'the channel a customer contacts through almost perfectly determines who handles them'. False: cross-tabbed support_channel vs resolved_by is chat 251h/168b, email 356h/259b, instagram_dm 93h/77b; majority-vote accuracy 0.5814, identical to the naive baseline 700/1204. support_channel tops the permutation ranking only because it is 'none' on 97.56% of rows, i.e. it is a has_ticket detector.",
+    "nn/data_builder.py:469-480 — resolved_by is the only ticket-derived column missing from FILTER_MAP, so it is scored against a 97.56% 'none' baseline (REPORT.md:277). customer_msg_count is also missing while msg_count is present.",
+    "nn/data_builder.py:451 — no LEAKAGE_MAP['resolution_time_minutes'] key, so resolved_by survives. Predicting the group mean of resolved_by (bot 16.9, human 756.5) gives RMSE 304.1 vs naive-mean RMSE 475.0; REPORT.md:310 publishes a model RMSE of 315, i.e. worse than the one-column lookup it calls '33% better than naive'.",
+    "nn/data_builder.py:451 — no LEAKAGE_MAP['product_type'] key. data/variants.csv weight_grams has exactly 6 distinct values across all 645 variants, each mapping to exactly one of the 6 product types (120g Cap, 280g Tee, 520g Sweatpants, 650g Hoodie, 850g Trainer, 900g Outerwear). Fully explains Accuracy 1.0000 at REPORT.md:245; REPORT.md:264 credits supplier_country and gross_margin_est instead, which are co-leaks (all top features are product/variant-level attributes broadcast onto line items).",
+    "nn/data_builder.py:204 — postcode_district is kept as a feature while city is a KEY_TARGET (nn/evaluate.py:361). All 40 postcode districts in data/addresses.csv map to exactly one city; majority-vote accuracy 1.0000 against a 75.0% London baseline. default_country is a partial leak at 80.6%. No number is published yet (REPORT.md:480 shows '—').",
+    "REPORT.md:480 — describes city as '20+ UK cities'. There are 11 cities and only London is in the UK (Madrid, New York, Chicago, Brooklyn, Los Angeles, Amsterdam, Dublin, Paris, Berlin, Rome).",
+    "nn/data_builder.py:68-69 — _load_refunds computes refund_variant_ids then discards it on the next line; the merge at :356 is on order_id, so refunds are labelled at order grain on a line-item table. Recounted: 5,843 refunds, no order refunded twice, every refund_line_items array has length exactly 1, and those orders contain 10,025 line items -> 4,182 rows (41.7% of the positive class) are mislabelled. REPORT.md:174's 'Positive rate (actual) 14.33%' is 10,025/69,956; the true rate is 8.36%.",
+    "data/refunds.csv — the fix for the above is viable: every refund's variant is present in its order's line items (0 misses in 5,843). 5,836 match exactly one line-item row and 7 match two, so the correct positive count is 5,850, not the 5,843 the 2026-09-28 TODO proposed asserting.",
+    "nn/model.py:174 vs :212-226 — all_preds/all_targets are reassigned at the top of every epoch's validation block, so after model.load_state_dict(best_weights) they still hold the FINAL epoch's predictions. The metric at :215-226 describes a discarded model, while permutation_importance (nn/estimator.py:514) and --save_model (:527) use the restored one. nn/evaluate.py:376-391 feeds the same stale arrays into every metric suite, so all of REPORT.md section 3 measures weights the run threw away.",
+    "nn/model.py:202-212 — if val_loss is NaN on epoch 1, 'inf - nan > min_delta' is False, so best_weights stays None and model.load_state_dict(None) raises a bare AttributeError.",
+    "nn/data_builder.py:536 — get_X_y types a single-valued column as binary because set(unique).issubset({0,1,True,False}) is satisfied by a one-element set. data/line_items.csv confirms quantity == 1 on all 69,956 rows, so --target quantity trains to completion then dies at nn/model.py:219 with 'Only one class present in y_true'. quantity is advertised as a headline target at nn/estimator.py:122.",
+    "nn/data_builder.py:240-244 — n_escalations counts a 'bot' message immediately followed by a 'human' one, but the senders in data/support_messages.json are customer (3,108), bot (1,204) and agent (700). There is no 'human' sender (same stale name at :231 and :252), so the count is identically 0 on all 1,204 tickets and therefore on all 69,956 rows. Renaming to 'agent' does not help: the transcripts have only two shapes, customer|bot|customer|agent|customer (700) and customer|bot|customer (504), so bot is never adjacent to agent. n_escalations is a FILTER_MAP target (:475), so --target n_escalations crashes exactly like quantity.",
+    "nn/evaluate.py:78 vs :321 — in make_plots' classification branch n is taken from the classes present in targets, but counts_pred is np.bincount(preds, minlength=n), which is longer than x whenever the model predicts a class index absent from the val targets; ax4.bar then raises on shape mismatch. Latent today.",
+    "nn/data_builder.py:143-144 — comment claims 'Multiple POs per variant — keep most recent'. data/po_line_items.csv has 645 rows and 645 distinct variant_ids, exactly one PO line each, so the sort_values/drop_duplicates is a no-op and no landed cost varies across POs.",
+    "nn/data_builder.py:351, :362, :371 — the addresses, support_tickets and support_message_features merges have no drop_duplicates while _load_refunds and _load_po_line_items do. Verified safe today (all five merge keys unique: orders 49,793, customers 22,440, addresses 22,440, variants 645, products 62, tickets 1,204), but one duplicate row in a refreshed CSV would silently multiply line items.",
+    "Environment: /usr/bin/python3 has no pip and no working ensurepip, so torch/pandas/sklearn cannot be installed and nothing in nn/ can be trained or re-measured on this box. This is why 43f7423 landed a correct code fix with the REPORT figure left flagged rather than corrected. All data figures above were recounted with the stdlib csv/json modules."
   ],
   "browser_checked": false,
-  "ran_the_code": false,
-  "verification_method": "Static reading plus stdlib csv/json recounts against data/. None of the project dependencies (pandas, torch, sklearn, vaderSentiment, matplotlib, openai) are installed in this environment, so the training pipeline could not be executed; every numeric claim above was derived from the raw CSVs directly.",
   "proposed_tasks": [
-    "[BUG] LEAKAGE_MAP has drifted twice - add the three sentiment columns to has_ticket and size_issue/damaged_in_transit to has_refund, cross-drop, re-run and correct REPORT.md",
-    "[BUG] Label refunds at line-item grain using the already-parsed refund_variant_ids instead of broadcasting the order-level flag",
-    "[BUG] Recompute val metrics from the restored best checkpoint instead of the final epoch's predictions; guard best_weights=None",
-    "[TEST] One structural leakage test over every LEAKAGE_MAP key, asserting no surviving feature is a deterministic function of the target, plus has_refund positive count == 5843",
-    "[QUICK WIN ~15min] Raise a clear error for zero-variance targets - --target quantity trains fully then dies in roc_auc_score"
+    "[BUG] Three more key targets are one-column lookups — resolved_by (resolution_time_minutes), resolution_time_minutes (resolved_by), product_type (weight_grams), city (postcode_district); add the four LEAKAGE_MAP keys plus FILTER_MAP['resolved_by'] and ['customer_msg_count'], withdraw the section 3.4/3.5/3.6 figures and three summary rows, and replace the two factually wrong interpretation paragraphs at REPORT.md:264 and :290 (~50 min)",
+    "[TEST] Write the structural leakage test — grain guard (has_refund.sum() == 5850), a target-agnostic near-determinism assertion over every KEY_TARGET and LEAKAGE_MAP key, and a zero-variance guard on num_cols; fails today on four targets and catches the next drift automatically (~45 min, cannot be executed on this box)",
+    "[QUICK WIN ~15min] Raise a clear ValueError in prepare_for_target when the target has nunique() < 2, so quantity and n_escalations fail instantly instead of after a full training run; drop the quantity line from _business_line",
+    "[BUG] Keep refund_variant_ids through the merge and label has_refund at variant grain in _build_joined; expected positive count 5,850 not 10,025, and blank refund_reason/refund_amount on rows that fail the test (~45 min)",
+    "[BUG] After model.load_state_dict(best_weights), re-run one no-grad pass over val_loader to rebuild all_preds/all_targets before computing the metric, and guard best_weights is None (~30 min; affects all 11 published numbers so it should land before any re-run)"
   ],
-  "verdict": "Well-engineered and genuinely working, but the numbers still cannot be trusted and nothing from the last review was fixed: LEAKAGE_MAP is hand-maintained and has now drifted twice, with has_ticket leaking through the Phase 10 sentiment columns over 100% of its positive class. The durable fix is the structural leakage test, not another manual map entry.",
-  "next_review": "2026-10-08"
+  "verdict": "Working, well-built demo whose published results are mostly artifacts. The code is clean and the previous review's leakage fix did land correctly — but the same hand-maintained-map failure recurred a third time, and this run found three more key targets (resolved_by, product_type, city) that are one-column lookups, with REPORT.md confidently explaining two of them via the wrong mechanism. Health is in the write-up, not the engineering: the right move is to withdraw the numbers and add the structural test, not to build Phase 11. Blocked on a runnable Python env — no pip on the review box, so re-runs need Visesh's machine.",
+  "next_review": "2026-10-29"
 }
