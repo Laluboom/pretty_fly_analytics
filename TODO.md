@@ -20,7 +20,7 @@ Ranked, best first. Reviewed 2026-10-19.
 
 ---
 
-## 1. [BUG] Three more key targets are one-column lookups — and REPORT's stated mechanism for two of them is factually wrong
+## 1. `[DONE 2026-10-19]` Three more key targets are one-column lookups — and REPORT's stated mechanism for two of them is factually wrong
 
 `LEAKAGE_MAP` (`nn/data_builder.py:451-466`) is keyed by target and has **6 keys**.
 `KEY_TARGETS` (`nn/evaluate.py:348-362`) has **11 entries**, and the feature table offers
