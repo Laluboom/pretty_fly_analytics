@@ -236,9 +236,20 @@ Full suite of 11 key targets available via `python nn/evaluate.py --all`.
 
 ---
 
-### 3.4 `product_type` — Multi-class Classification (6 classes)
+### 3.4 `product_type` — Multi-class Classification (6 classes) (⚠️ PENDING RE-RUN — see note)
 
 > **Business question:** Can we identify product category from all other signals?
+
+> **⚠️ Not leakage-free.** `weight_grams` has exactly 6 distinct values across all 645
+> variants, each mapping to exactly one product type — a literal lookup table.
+> `supplier_country`, `gross_margin_est`, `variant_price`, `price`, and `lead_time_days`
+> are the same leak in disguise: all are product- or variant-level attributes broadcast
+> onto every line item of that product, so the model is joining, not predicting. None of
+> these were in `LEAKAGE_MAP["product_type"]`. `LEAKAGE_MAP` has now been fixed
+> (`nn/data_builder.py`), but re-running `python nn/evaluate.py --target product_type
+> --epochs 30` requires ML dependencies (`torch`, `scikit-learn`, …) not installed in
+> this environment. The figures and "top features" below are the **stale, leaky**
+> numbers and must not be cited as the product-type mechanism.
 
 | Metric | Value |
 |--------|-------|
@@ -261,13 +272,30 @@ Trainer        1.000    1.000   1.000      826
 
 **Top features:** `supplier_country` (Δ=1.892), `gross_margin_est` (Δ=1.005), `variant_price`, `price`, `lead_time_days`, `weight_grams`
 
-**Interpretation:** Perfect classification. The new Phase 8 feature `supplier_country` is now the strongest signal — different product categories are sourced from different countries. `gross_margin_est` remains strong (different margins per category). Together, supplier origin and margin perfectly separate all 6 product types.
+**Interpretation (⚠️ wrong — see note above):** The credited mechanism (supplier origin + margin) is itself a co-leak, not the real driver. `weight_grams` alone is a perfect lookup; everything else in the top-6 is just another broadcast product/variant attribute riding along. "Can we identify product category from all other signals" is trivially yes when those signals include the product's own weight.
 
 ---
 
-### 3.5 `resolved_by` — Multi-class Classification (3 classes)
+### 3.5 `resolved_by` — Multi-class Classification (3 classes) (⚠️ PENDING RE-RUN — see note)
 
 > **Business question:** Will this ticket be resolved by a bot, a human agent, or not at all?
+
+> **⚠️ Not leakage-free, and scored against the wrong baseline.** `resolution_time_minutes`
+> is a perfect lookup for `resolved_by` (bot tickets resolve in [5,29] min, human in
+> [60,1439] min — zero overlap, verified this run: n=504/700). `msg_count` and
+> `customer_msg_count` are the same leak in disguise (transcript shapes {0,3,5}/{0,2,3}
+> map 1:1 onto {none,bot,human}). None of these were in `LEAKAGE_MAP["resolved_by"]`
+> (that key did not exist at all). Separately, `resolved_by` was missing from
+> `FILTER_MAP`, so it is scored against a 97.56% "none" baseline instead of the real
+> bot-vs-human split — that's why "+2.4pp" reads as unremarkable instead of alarming.
+> Both are now fixed in `nn/data_builder.py`. The claim below that `support_channel`
+> "almost perfectly determines who handles them" is also wrong: cross-tabbed this run,
+> majority-vote accuracy of `support_channel` → `resolved_by` is 0.5814 — exactly the
+> naive baseline (700/1204). `support_channel` only topped the permutation ranking
+> because it is `"none"` on 97.56% of rows, so shuffling it destroys *has_ticket*
+> detection, not handler prediction. Re-running `python nn/evaluate.py --target
+> resolved_by --epochs 30` requires ML dependencies not installed in this environment.
+> The figures below are **stale and leaky**.
 
 | Metric | Value |
 |--------|-------|
@@ -287,13 +315,24 @@ none         1.000    1.000   1.000   13,651
 
 **Top features:** `support_channel` (Δ=0.120), `resolution_time_minutes` (Δ=0.111), `ticket_category` (Δ=0.027), `msg_count` (Δ=0.010), `pct_negative_msgs` (Δ=0.0002)
 
-**Interpretation:** Perfect classification, improved from previous ~99.9%. `support_channel` now leads (overtaking `resolution_time_minutes`) — the channel a customer contacts through almost perfectly determines who handles them. `msg_count` at rank 4 and `pct_negative_msgs` at rank 6 show Phase 8/10 support features contributing signal.
+**Interpretation (⚠️ wrong — see note above):** Not a real business insight. `support_channel`'s top rank measures the model's ability to detect whether a ticket exists at all (via the 97.56% "none" rate), not who handles it. The real signal, `resolution_time_minutes`/`msg_count`/`customer_msg_count`, is a one-column lookup and will be dropped from features once this target is re-run.
 
 ---
 
-### 3.6 `resolution_time_minutes` — Regression
+### 3.6 `resolution_time_minutes` — Regression (⚠️ PENDING RE-RUN — see note)
 
 > **Business question:** How long will this support ticket take to resolve?
+
+> **⚠️ Not leakage-free.** There was no `LEAKAGE_MAP["resolution_time_minutes"]` key, so
+> `resolved_by` (plus `msg_count`/`customer_msg_count`) survived as a feature. Measured
+> this run: predicting just the group mean of `resolved_by` (bot 16.9 min, human 756.5
+> min) gives RMSE **304.1** against a naive-mean RMSE of **475.0** — the model's 315
+> below is *worse* than that one-column lookup. The entire "33% better than naive"
+> claim is that column, and nothing else; §4's framing of this as a "mutually
+> predictive" finding is wrong — it's the same leak as §3.5, not an insight.
+> `LEAKAGE_MAP` has now been fixed (`nn/data_builder.py`). Re-running `python
+> nn/evaluate.py --target resolution_time_minutes --epochs 30` requires ML dependencies
+> not installed in this environment. The figures below are **stale and leaky**.
 
 Trained on ticket rows only (1,705 rows — `FILTER_MAP` excludes non-ticket orders).
 
@@ -309,7 +348,7 @@ Trained on ticket rows only (1,705 rows — `FILTER_MAP` excludes non-ticket ord
 
 **Top features:** `resolved_by` (Δ=136,908), `msg_count` (Δ=4,509), `customer_msg_count` (Δ=2,485), `postcode_district` (Δ=2,277), `avg_sentiment` (Δ=2,235), `ticket_category` (Δ=1,354)
 
-**Interpretation:** Resolution time has a very long tail (max 1,439 min = 24 hours) that makes RMSE look worse than the experience. `resolved_by` overwhelmingly dominates — bots resolve in seconds, humans in hours. Notably, `avg_sentiment` (VADER) appears at rank 5: angrier customer messages correlate with longer resolution times, a real and interpretable signal.
+**Interpretation (⚠️ wrong — see note above):** `resolved_by` does not "overwhelmingly dominate" a real regression — it's a one-column lookup for the target's two sub-ranges, and the model's RMSE is worse than that lookup alone. The `avg_sentiment` signal at rank 5 may still be real, but it can't be assessed until this is re-run leakage-free.
 
 ---
 
@@ -320,14 +359,14 @@ Trained on ticket rows only (1,705 rows — `FILTER_MAP` excludes non-ticket ord
 | `has_refund` | `size_issue` | `damaged_in_transit` | `product_type` | Fit and transit damage are the primary refund drivers |
 | `satisfaction_rating` | `city` | `ticket_category` | `gender_segment_affinity` | No dominant signal — dataset too sparse |
 | `total_price` | `subtotal` | `price_components_sum` | `total_shipping` | Algebraic identity — confirms data consistency |
-| `product_type` | `supplier_country` | `gross_margin_est` | `variant_price` | Supplier origin + margin perfectly separate categories |
-| `resolved_by` | `support_channel` | `resolution_time_minutes` | `ticket_category` | Channel determines handler; time confirms it |
-| `resolution_time_minutes` | `resolved_by` | `msg_count` | `customer_msg_count` | Bot vs human + conversation length drive time |
+| `product_type` ⚠️ | `supplier_country` | `gross_margin_est` | `variant_price` | STALE — all 3 are product/variant-level leaks (see §3.4); real target is `weight_grams`, now dropped |
+| `resolved_by` ⚠️ | `support_channel` | `resolution_time_minutes` | `ticket_category` | STALE — `support_channel`'s rank is a `has_ticket`-detection artifact, not a handler signal; `resolution_time_minutes` is a leak, now dropped (see §3.5) |
+| `resolution_time_minutes` ⚠️ | `resolved_by` | `msg_count` | `customer_msg_count` | STALE — all 3 are the same `resolved_by` leak, now dropped (see §3.6) |
 
 **Cross-target patterns:**
-- `resolved_by` and `resolution_time_minutes` are mutually predictive — they form a tight cluster and each is the strongest predictor of the other
-- Phase 8 supplier features (`supplier_country`, `lead_time_days`) appear in product-type and refund importance — supply chain data adds real signal
-- `avg_sentiment` (VADER) shows up in `resolution_time_minutes` top 5 — angrier tickets take longer to resolve
+- ⚠️ `resolved_by` and `resolution_time_minutes` being "mutually predictive" was a leakage bug, not a finding — `LEAKAGE_MAP` had no entry for either, so each stayed in the other's feature set. Both are fixed in `nn/data_builder.py`; see §3.5/§3.6.
+- Phase 8 supplier features (`supplier_country`, `lead_time_days`) appear in product-type and refund importance — ⚠️ for `product_type` this is a leak (see §3.4), not supply-chain signal
+- `avg_sentiment` (VADER) shows up in `resolution_time_minutes` top 5 — angrier tickets take longer to resolve, but this can't be assessed until the target is re-run without `resolved_by`/`msg_count`/`customer_msg_count`
 - `size_issue` and `damaged_in_transit` dominate `has_refund`, confirming that reason-based engineered flags capture the refund mechanism better than raw financials
 
 ---
@@ -470,14 +509,14 @@ python validate.py data/
 | `has_refund` | binary | AUC | **0.844** ⚠️ | STALE — leaked via `size_issue`/`damaged_in_transit`, needs re-run (see §3.1) |
 | `satisfaction_rating` | regression | RMSE | 1.213 | ≈ naive 1.175 — data limitation |
 | `total_price` | regression | RMSE | **£4.86** | 96% better than naive £113 |
-| `product_type` | classification | Accuracy | **1.000** | +46 pp vs 54% baseline |
-| `resolved_by` | classification | Accuracy | **1.000** | +2 pp vs 98% baseline |
-| `resolution_time_minutes` | regression | RMSE | 315 min | 33% better than naive 473 min |
+| `product_type` | classification | Accuracy | **1.000** ⚠️ | STALE — leaked via `weight_grams`/`supplier_country`/etc, needs re-run (see §3.4) |
+| `resolved_by` | classification | Accuracy | **1.000** ⚠️ | STALE — leaked via `resolution_time_minutes`/`msg_count`/etc, needs re-run (see §3.5) |
+| `resolution_time_minutes` | regression | RMSE | 315 min ⚠️ | STALE — leaked via `resolved_by`/`msg_count`/etc, needs re-run (see §3.6) |
 | `damaged_in_transit` | binary | AUC | **0.829** | refund rows only; `variant_return_rate` top signal |
 | `size_issue` | binary | AUC | ~0.75 | refund rows only (10,025) |
 | `delivery_delay_days` | regression | RMSE | — | supplier chain; run `--target delivery_delay_days` |
 | `variant_return_rate` | regression | RMSE | — | inventory health signal |
-| `city` | classification | Accuracy | — | 20+ UK cities |
+| `city` | classification | Accuracy | — | `postcode_district` is a one-column lookup for this target, now dropped via `LEAKAGE_MAP` — not yet run |
 
 ### Output files
 

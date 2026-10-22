@@ -463,11 +463,30 @@ LEAKAGE_MAP = {
                                  "damaged_in_transit"],
     "landed_cost_per_unit_gbp": ["gross_margin_est"],
     "variant_price":            ["price", "gross_margin_est"],
+    # resolved_by <-> resolution_time_minutes: bot tickets resolve in [5,29] min, human in
+    # [60,1439] min, zero overlap — each is a one-column lookup for the other. msg_count and
+    # customer_msg_count are the same leak in disguise: the transcripts only have the shapes
+    # {0,3,5} / {0,2,3}, which map 1:1 onto {none,bot,human}.
+    "resolved_by":              ["resolution_time_minutes", "msg_count", "customer_msg_count"],
+    "resolution_time_minutes":  ["resolved_by", "msg_count", "customer_msg_count"],
+    # product_type: weight_grams has exactly 6 values, each mapping to exactly one product
+    # type — a literal lookup table. supplier_country/gross_margin_est/variant_price/price/
+    # lead_time_days are product- or variant-level attributes broadcast onto every line item
+    # of that product, so they co-leak the same way.
+    "product_type":              ["weight_grams", "supplier_country", "gross_margin_est",
+                                  "variant_price", "price", "lead_time_days"],
+    # city: postcode_district is derived from the same address row and each of the 40
+    # districts maps to exactly one city — a one-column lookup.
+    "city":                      ["postcode_district"],
 }
 
 # B2: targets where most rows are structural zeros — filter to meaningful rows before training.
 FILTER_MAP = {
     "resolution_time_minutes":      ("has_ticket", 1),
+    # "none" (no ticket) is a structural default, not a real resolution outcome — same
+    # reasoning as resolution_time_minutes above. Without this, resolved_by is scored
+    # against a 97.56% "none" baseline instead of the real bot-vs-human split.
+    "resolved_by":                   ("has_ticket", 1),
     "damaged_in_transit":           ("has_refund", 1),
     "size_issue":                   ("has_refund", 1),
     "msg_count":                    ("has_ticket", 1),
