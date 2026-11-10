@@ -496,7 +496,7 @@ def main():
         print(f"Subset : {sub_col}=={sub_val} → {len(df):,} rows (from {before:,})")
 
     # Prepare data
-    X_cat, X_num, y, task_type, n_classes, feature_meta, target_encoder = prepare_for_target(
+    X_cat, X_num, y, task_type, n_classes, feature_meta, target_encoder, groups = prepare_for_target(
         df, args.target
     )
 
@@ -506,6 +506,7 @@ def main():
         task_type, n_classes, feature_meta,
         epochs=args.epochs,
         batch_size=args.batch_size,
+        groups=groups,
     )
 
     # Permutation importance on val set

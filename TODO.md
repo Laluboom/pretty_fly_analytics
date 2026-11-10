@@ -9,7 +9,7 @@ No code was modified in this review. No ML deps on the review box (no `pip`, no 
 
 ---
 
-## 1. [BUG] The val split is row-level on a line-item table — so every published number includes an entity lookup that no `LEAKAGE_MAP` entry can remove
+## 1. `[DONE 2026-11-10]` The val split is row-level on a line-item table — so every published number includes an entity lookup that no `LEAKAGE_MAP` entry can remove
 
 `nn/model.py:124` splits **rows**:
 
