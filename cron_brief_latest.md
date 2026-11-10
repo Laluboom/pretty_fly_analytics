@@ -1,104 +1,82 @@
-# Daily review — pretty_fly_analytics (2026-10-19)
+# Daily brief — pretty_fly_analytics (2026-11-10)
 
 ## What I looked at
 
-30 commits of history, the four `nn/` source files end to end (1,847 lines), `REPORT.md`
-in full, and the previous two reviews' `TODO.md`. Then I recounted every data claim
-against the CSVs directly — `line_items`, `refunds`, `support_tickets`,
-`support_messages.json`, `products`, `variants`, `addresses`, `customers`, `orders`,
-`po_line_items`. No browser check: this is a CLI/ML project, nothing to serve.
+All four modules in `nn/` end to end (`data_builder` 649 lines, `model` 229, `estimator`
+538, `evaluate` 450), `REPORT.md`, `TODO.md`, `README_nn.md`, `HOW_TO_USE.md`, and the raw
+data — `line_items`, `orders`, `customers`, `addresses`, `variants`, `email_events`,
+`inventory_movements`, `purchase_orders`, `po_line_items`, `refunds`, `support_tickets`,
+`support_messages.json`. No browser check — this is a CLI/ML project, nothing to serve.
+The review box still has no `pip` and no working `ensurepip`, so I recounted everything with
+the stdlib `csv`/`json` modules rather than guessing.
 
-**I could not train anything.** `/usr/bin/python3` has no `pip` and no working
-`ensurepip`, so `torch`/`pandas`/`sklearn` are unavailable. All verification below is
-from reading code plus stdlib `csv`/`json` recounts. That constraint is itself a finding
-— it's exactly why the last doer run (`43f7423`) landed a correct code fix but left the
-`REPORT.md` figure flagged instead of corrected.
+Since the last review (2026-10-19), one of the five proposed tasks landed — `f31404b`, the
+four missing `LEAKAGE_MAP` keys. **The other four were never touched** and are carried
+forward.
 
-## Good news first
+## The finding
 
-The 2026-09-28 top item actually got done and merged (PR #1). I verified it by reading
-`LEAKAGE_MAP` rather than trusting the commit message: the three sentiment columns are in
-`has_ticket`, and `size_issue`/`damaged_in_transit` are cross-dropped for `has_refund`
-(`nn/data_builder.py:451-466`). Items 2, 3 and 5 from that list are untouched and I've
-re-confirmed all three.
+Three consecutive reviews have now patched `LEAKAGE_MAP` by hand. This run I went looking
+for why the same class of bug keeps recurring, and the answer is one line up the stack:
+**`nn/model.py:124` splits rows, but the table's grain is the line item while every one of
+the 11 `KEY_TARGETS` is an attribute of a coarser entity** — an order, a customer, or a
+variant. Sibling rows from the same entity land on both sides of the split carrying an
+identical feature vector *and* an identical label.
 
-## What I found
+I measured it rather than asserting it. I rebuilt the exact order+customer-grain feature
+vector a `has_refund` run sees *after* the `LEAKAGE_MAP` drops — money columns, utm,
+discount, month/dow/hour, the six customer columns, city, postcode district, email
+aggregates. **49,791 of 49,793 orders have a globally unique fingerprint.** The primary key
+is fully reconstructable from surviving features. Simulating the same 80/20 split: 42.7% of
+val rows (5,974/13,991) have a byte-identical train sibling, and that sibling's label is
+correct in 5,974 of 5,974 cases. A pure lookup — no model, no training — scores
+**accuracy 0.9466, precision 1.000, recall 0.617** against a naive baseline of 0.8606. The
+published AUC is 0.8436.
 
-**The hand-maintained-map problem has recurred a third time, and this time it's worse
-than "a column was missed."** `LEAKAGE_MAP` is keyed by target and has 6 keys;
-`KEY_TARGETS` publishes 11. So 7 published targets get no leakage handling whatsoever.
-Three of them are one-column lookups:
+`variant_return_rate` is worse. It is a per-variant constant on a table with 645 variants
+and 69,956 rows, so **100%** of val rows have their variant in train, and the variant is
+uniquely identified by `(variant_price, weight_grams, inventory_quantity, option1, option2)`
+for all 645. A per-variant lookup gives **RMSE 0.000000, R² 1.000000**.
 
-- **`resolved_by`, Accuracy 1.0000** is `resolution_time_minutes` read back. Bot-resolved
-  tickets take 5–29 minutes, human-resolved take 60–1439. Zero overlap — a single
-  threshold at 29 gives 100%. `msg_count` and `customer_msg_count` are independent perfect
-  separators too, since the transcripts have only two shapes.
-- **`resolution_time_minutes`, RMSE 315, "33% better than naive 473"** is the same leak in
-  reverse. Just predicting the group mean of `resolved_by` (bot 16.9 min, human 756.5)
-  gives RMSE **304** — better than the model. The entire headline improvement is that one
-  column.
-- **`product_type`, Accuracy 1.0000** is `weight_grams`, which has exactly 6 distinct
-  values across all 645 variants, one per product type: 120g→Cap, 280g→Tee,
-  520g→Sweatpants, 650g→Hoodie, 850g→Trainer, 900g→Outerwear. A literal lookup table.
-- **`city`** is `postcode_district` — all 40 districts map to exactly one of 11 cities.
-  No number is published yet, but it's a documented `--all` target that will return 1.000.
+This matters most for what `REPORT.md` is currently promising. Three sections are flagged
+"pending re-run" after the leakage fixes. **Those re-runs will not produce honest numbers** —
+the lookup channel is still wide open, and no column drop can close it. Only a grouped split
+can.
 
-What makes this more than a map-maintenance chore is that **`REPORT.md` explains two of
-these perfect scores with the wrong mechanism.** §3.5 states "the channel a customer
-contacts through almost perfectly determines who handles them." It doesn't:
-`support_channel` → `resolved_by` is 58.14% by majority vote, which is *exactly* the naive
-baseline (chat 251h/168b, email 356h/259b, instagram 93h/77b). `support_channel` tops the
-permutation ranking only because it's `"none"` on 97.56% of rows — the ranking is measuring
-"is this row a ticket at all," and the report reads it as business insight. §3.4 similarly
-credits `supplier_country` and margin for `product_type` when the mechanism is weight.
-§3.6 even *notices* that `resolved_by` and `resolution_time_minutes` are "mutually
-predictive… each the strongest predictor of the other" and files it as a finding rather
-than a leak.
+## The second finding
 
-I also re-verified the two carried bugs and found the previous review's proposed test
-assertion was off. The refund grain bug is real — 4,182 rows (41.7% of positives)
-mislabelled, true line-item rate 8.36% not the published 14.33%. But the correct positive
-count is **5,850, not 5,843**: 7 orders contain the refunded variant twice. The
-2026-09-28 TODO proposed asserting 5,843, which would have failed by 7. Good news on
-feasibility though — every refund's variant does appear in its order's line items (0
-misses in 5,843), so the fix joins cleanly.
+`python nn/evaluate.py --all` has never completed. `delivery_delay_days` is identically 0 on
+every row — all 21 purchase orders have `actual_delivery == expected_delivery`, so all 645
+variants get 0. It is `KEY_TARGETS[8]`, and `get_X_y` types it **binary** (not the
+"regression" `REPORT.md:517` claims) because `{0.0}.issubset({0,1,True,False})` is satisfied
+by a one-element set. So `--all` trains eight full models, then `roc_auc_score` raises
+`Only one class present in y_true` and the run dies before reaching `variant_return_rate` or
+`city`.
 
-Finally, a small one with a nice root cause. `n_escalations` is identically zero on all
-69,956 rows: the rule looks for a `bot` message followed by a `human` one, but the senders
-in the JSON are `customer`, `bot` and **`agent`** — there is no `human`. Renaming it won't
-help either, because the only two conversation shapes are
-`customer|bot|customer|agent|customer` and `customer|bot|customer`, so `bot` is never
-adjacent to `agent`. And redefining escalation as "an agent replied at all" would give you
-exactly `resolved_by == "human"` — a fresh perfect leak. Best left dead; it just shouldn't
-crash.
+The proof was already in the repo: the summary table at `REPORT.md:505` has figures for the
+first eight targets and `—` for exactly rows 9, 10 and 11. The command is documented in four
+places and has never run to the end. Same root cause as the known `quantity` and
+`n_escalations` crashes — this is just the first instance inside `KEY_TARGETS`.
 
 ## What I'm proposing
 
-Ranked in `TODO.md`. The shape of it: **stop publishing the numbers, then add the test
-that stops this recurring** — not build Phase 11.
+1. **[BUG]** Switch the split to `GroupShuffleSplit` with a per-target group key. Three
+   touch points: keep `order_id`/`customer_id`/`variant_id` past
+   `nn/data_builder.py:426-431`, exclude them from `cat_cols`/`num_cols`, and return the
+   group key from `get_X_y` so it survives the `dropna` and `FILTER_MAP` filters. ~55 min.
+2. **[QUICK WIN ~15min]** Raise a clear `ValueError` on `nunique() < 2` in
+   `prepare_for_target`, and have the `--all` loop skip-and-continue. Smallest change that
+   produces visible progress: `--all` reaches all 11 targets for the first time.
+3. **[BUG]** Rebuild `all_preds`/`all_targets` after restoring `best_weights`
+   (`nn/model.py:212` vs `215-226`). Should land with #1, before any re-run. ~30 min.
+4. **[TEST]** The structural suite — now with a group guard as its first and most valuable
+   rule (zero train/val entity overlap per target; fails today at 42.7% and 100%). ~45 min.
+5. **[BUG]** Label `has_refund` at variant grain. Carried forward, still 41.7% of the
+   positive class mislabelled. ~45 min.
 
-1. **[BUG]** Add the four missing `LEAKAGE_MAP` keys plus `FILTER_MAP["resolved_by"]` and
-   `["customer_msg_count"]`; withdraw the §3.4/§3.5/§3.6 figures the way §3.1 already was;
-   rewrite the two wrong interpretation paragraphs. ~50 min, no training needed — which is
-   the point, given the env.
-2. **[TEST]** The structural leakage test. Not a hardcoded list of today's leaks, which
-   would just restate the bug: a target-agnostic near-determinism assertion over every
-   `KEY_TARGET`, plus the `has_refund.sum() == 5850` grain guard and a zero-variance guard
-   on `num_cols`. It fails today on four targets, would have caught `43f7423`, and catches
-   the next drift for free. This is the answer to "which single test would have helped."
-3. **[QUICK WIN ~15min]** Guard `nunique() < 2` in `prepare_for_target` so `quantity` and
-   `n_escalations` fail instantly rather than after a full training run.
-4. **[BUG]** Label refunds at variant grain, target 5,850 positives.
-5. **[BUG]** The reported metric comes from weights the run discarded (`nn/model.py:174`
-   vs `:212`), so the printed score, the importance ranking and the saved artefact describe
-   three different models. 30 minutes, and it affects all 11 numbers — it should land
-   before any re-run.
+## Read on health
 
-## Verdict
-
-Clean, genuinely well-built code whose published results are mostly artifacts. The
-engineering isn't the problem; the write-up is. Two things need Visesh: a machine with the
-deps so the re-runs can actually happen, and a call on whether `REPORT.md` is still a
-document anyone relies on — if it is, items 1 and 5 are urgent; if it's a hackathon
-souvenir, item 2 plus honest caveats is enough and this repo should drop out of the active
-tier.
+The code is well-written and the data loading is careful — that has not changed. The problem
+is that the *evaluation* has a structural flaw the code quality masks, and this run found its
+root rather than another symptom. Stop patching `LEAKAGE_MAP`, fix the split, add the test,
+withdraw the numbers. Do not build Phase 11.
