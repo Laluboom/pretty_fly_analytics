@@ -424,12 +424,18 @@ def _engineer_features(df):
     df["size_issue"]            = df["refund_reason"].isin(["size_too_small", "size_too_large"]).astype(int)
 
     drop_cols = [
-        "order_id", "line_item_id", "variant_id", "product_id", "customer_id",
+        "line_item_id", "product_id",
         "created_at", "order_date", "discount_code", "utm_campaign",
         "refund_variant_ids",
     ]
     df = df.drop(columns=[c for c in drop_cols if c in df.columns])
     return df
+
+
+# Row-level entity keys kept past feature engineering so a per-target group split
+# (GroupShuffleSplit) can keep sibling rows of the same entity on one side of the
+# val split — they are excluded from both cat_cols and num_cols in _encode_and_scale.
+GROUP_COLS = {"order_id", "customer_id", "variant_id"}
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +486,21 @@ LEAKAGE_MAP = {
     "city":                      ["postcode_district"],
 }
 
+# Per-target entity grain — used to GroupShuffleSplit the val split so sibling rows of
+# the same entity can't land on both sides carrying an identical feature vector + label.
+# Targets not listed here fall back to the row-level train_test_split in train_model.
+GROUP_MAP = {
+    "has_refund":               "order_id",
+    "total_price":              "order_id",
+    "satisfaction_rating":      "order_id",
+    "resolved_by":              "order_id",
+    "resolution_time_minutes":  "order_id",
+    "product_type":             "variant_id",
+    "variant_return_rate":      "variant_id",
+    "delivery_delay_days":      "variant_id",
+    "city":                     "customer_id",
+}
+
 # B2: targets where most rows are structural zeros — filter to meaningful rows before training.
 FILTER_MAP = {
     "resolution_time_minutes":      ("has_ticket", 1),
@@ -503,8 +524,8 @@ def _encode_and_scale(df, target_col):
     df = df.copy()
 
     feature_cols = [c for c in df.columns if c != target_col]
-    cat_cols = [c for c in CATEGORICAL_COLS if c in feature_cols]
-    num_cols = [c for c in feature_cols if c not in cat_cols]
+    cat_cols = [c for c in CATEGORICAL_COLS if c in feature_cols and c not in GROUP_COLS]
+    num_cols = [c for c in feature_cols if c not in cat_cols and c not in GROUP_COLS]
 
     for col in cat_cols:
         df[col] = df[col].fillna("unknown").astype(str)
@@ -537,11 +558,13 @@ def _encode_and_scale(df, target_col):
 # 1.5  Target extraction
 # ---------------------------------------------------------------------------
 
-def get_X_y(df, feature_meta, target_col):
+def get_X_y(df, feature_meta, target_col, group_col=None):
     df = df.dropna(subset=[target_col]).copy()
 
     cat_cols = feature_meta["cat_cols"]
     num_cols = feature_meta["num_cols"]
+
+    groups = df[group_col].values if group_col and group_col in df.columns else None
 
     unique_vals = df[target_col].nunique()
     dtype = df[target_col].dtype
@@ -566,7 +589,7 @@ def get_X_y(df, feature_meta, target_col):
     X_cat = df[cat_cols].values.astype(np.int64)
     X_num = df[num_cols].values.astype(np.float32)
 
-    return X_cat, X_num, y, task_type, n_classes, target_encoder
+    return X_cat, X_num, y, task_type, n_classes, target_encoder, groups
 
 
 # ---------------------------------------------------------------------------
@@ -641,9 +664,14 @@ def prepare_for_target(df, target_col):
         print(f"Leakage: dropped {drop}")
 
     df_encoded, feature_meta = _encode_and_scale(df_clean, target_col)
-    X_cat, X_num, y, task_type, n_classes, target_encoder = get_X_y(df_encoded, feature_meta, target_col)
+    group_col = GROUP_MAP.get(target_col)
+    X_cat, X_num, y, task_type, n_classes, target_encoder, groups = get_X_y(
+        df_encoded, feature_meta, target_col, group_col
+    )
 
     print(f"Target : {target_col}")
     print(f"Task   : {task_type}  |  Classes: {n_classes}  |  Rows: {len(y):,}  |  Features: {X_cat.shape[1] + X_num.shape[1]}")
+    if groups is not None:
+        print(f"Group  : {group_col}  |  unique entities: {len(np.unique(groups)):,}")
 
-    return X_cat, X_num, y, task_type, n_classes, feature_meta, target_encoder
+    return X_cat, X_num, y, task_type, n_classes, feature_meta, target_encoder, groups
