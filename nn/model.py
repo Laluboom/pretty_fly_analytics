@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GroupShuffleSplit
 from sklearn.metrics import roc_auc_score, accuracy_score
 from tqdm import tqdm
 
@@ -98,6 +98,7 @@ def train_model(
     min_delta=1e-5,
     device=None,
     seed=42,
+    groups=None,
 ):
     # M2: seed everything for reproducible weight init and dropout
     torch.manual_seed(seed)
@@ -120,10 +121,16 @@ def train_model(
         print(f"Sparse target ({len(y)} rows): using {int(val_size*100)}% val split")
 
     idx = np.arange(len(y))
-    try:
-        train_idx, val_idx = train_test_split(idx, test_size=val_size, random_state=42, stratify=stratify)
-    except ValueError:
-        train_idx, val_idx = train_test_split(idx, test_size=val_size, random_state=42)
+    if groups is not None:
+        # Group split: sibling rows of the same entity (order/customer/variant) are
+        # kept on one side, so a val row can't have a byte-identical train lookup.
+        gss = GroupShuffleSplit(n_splits=1, test_size=val_size, random_state=42)
+        train_idx, val_idx = next(gss.split(idx, groups=groups))
+    else:
+        try:
+            train_idx, val_idx = train_test_split(idx, test_size=val_size, random_state=42, stratify=stratify)
+        except ValueError:
+            train_idx, val_idx = train_test_split(idx, test_size=val_size, random_state=42)
 
     def make_loader(indices, shuffle):
         ds = PrettyFlyDataset(X_cat[indices], X_num[indices], y[indices], task_type)

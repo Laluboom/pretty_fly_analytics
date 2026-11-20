@@ -373,11 +373,12 @@ def run_target(df, target_col, epochs, batch_size, plot):
     print(f"  EVALUATING: {target_col}")
     print(f"{'#'*W}")
 
-    X_cat, X_num, y, task_type, n_classes, fm, te = prepare_for_target(df, target_col)
+    X_cat, X_num, y, task_type, n_classes, fm, te, groups = prepare_for_target(df, target_col)
 
     model, val_loss, val_metric, metric_name, val_idx, preds, targets = train_model(
         X_cat, X_num, y, task_type, n_classes, fm,
         epochs=epochs, batch_size=batch_size,
+        groups=groups,
     )
 
     device = next(model.parameters()).device
